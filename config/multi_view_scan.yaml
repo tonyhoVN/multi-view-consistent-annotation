@@ -1,0 +1,61 @@
+# Parameters for scripts/multi_view_scan.py.
+# Command-line options override values from this file.
+multi_view_scan:
+  # Candidate camera geometry in the world frame.
+  center: [0.40, 0.0, 0.0]
+  radius: 0.40
+  view_count: 30
+  azimuth_bounds: [10.0, 135.0]
+  elevation_bounds: [30.0, 75.0]
+
+  # Output and camera calibration.
+  output_dir: scan_output
+  camera_yaml: /home/hier-tony/Projects/dual_manipulation_isaac_sim/env/urdf/camera.yaml
+
+  # Robot and camera TF frames.
+  world_frame: world
+  left_tcp_frame: left_fr3_hand_tcp
+  right_tcp_frame: right_fr3_hand_tcp
+  left_camera_frame: left_handeye_camera_color_optical_frame
+  right_camera_frame: right_handeye_camera_color_optical_frame
+  left_target_frame_prefix: scan_left_camera_target
+  right_target_frame_prefix: scan_right_camera_target
+
+  # Synchronized RGB-D topics.
+  left_rgb_topic: /left_handeye/color/image_raw/compressed
+  left_depth_topic: /left_handeye/aligned_depth_to_color/image_raw
+  right_rgb_topic: /right_handeye/color/image_raw/compressed
+  right_depth_topic: /right_handeye/aligned_depth_to_color/image_raw
+
+  # MoveIt planning and collision-aware multi-tip IK.
+  planning_group: dual_arm
+  ik_service: /compute_ik
+  joint_state_topic: /joint_states
+  ik_timeout: 0.25
+  joint_state_timeout: 2.0
+
+  # Complete trajectory visualization in RViz.
+  display_trajectory_topic: /display_planned_path
+  left_camera_path_topic: /scan/left_camera_path
+  right_camera_path_topic: /scan/right_camera_path
+  trajectory_point_time: 0.25
+  trajectory_preview_time: 5.0
+  target_preview_time: 1.0
+
+  # Projection-overlap and open-TSP optimization.
+  scan_volume_radius: 0.15
+  projection_samples: 2048
+  minimum_neighbor_overlap: 0.35
+  overlap_weight: 0.5
+  distance_metric: pose            # pose or joint
+  pose_translation_weight: 1.0     # scales combined TCP translation
+  pose_rotation_weight: 0.0       # meters per radian of TCP rotation
+  two_opt_passes: 30
+
+  # Runtime timeouts and capture timing, in seconds.
+  motion_timeout: 15.0
+  camera_timeout: 5.0
+  tf_timeout: 2.0
+  clock_timeout: 5.0
+  settle_time: 1.0
+  use_sim_time: true

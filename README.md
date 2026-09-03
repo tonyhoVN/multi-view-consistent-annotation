@@ -23,13 +23,19 @@ and execute a selected grasp through `RobotAPI`.
 | Path | Purpose |
 | --- | --- |
 | `scripts/run_random_objects.sh` | Spawn five random objects from the configured YCB pool. |
-| `scripts/multi_view_scan.py` | Coordinated dual-arm hemisphere scan and RGB-D capture. |
+| `scripts/multi_view_scan.py` | Reachability-filtered, overlap-aware dual-arm scan and RGB-D capture. |
+| `scripts/scan_trajectory.py` | Pure spiral generation, projection overlap, open-TSP, and constrained 2-opt. |
+| `scripts/moveit_ik.py` | Read-only collision-aware MoveIt multi-tip IK client. |
+| `config/multi_view_scan.yaml` | Complete configurable parameter set for multiview scanning. |
 | `scripts/scene_reconstruction.py` | Merge captured RGB-D views into a world-frame scene cloud. |
 | `scripts/vision_pipeline.ipynb` | Qwen3-VL detection, SAM segmentation, point-cloud generation, and grasp workflow. |
 | `scripts/grasp_sampling.py` | Principal-curvature grasp sampling, collision checks, scoring, and command export. |
 | `scripts/execute_grasp.py` | Validate, print, and optionally execute a grasp command. |
 | `scripts/o3d_process.py` | Shared Open3D and point-cloud utilities. |
 | `scripts/aux_math.py` | Shared pose, transform, and hemisphere geometry utilities. |
+| `TASK.md` | Detailed multiview trajectory-planning contract and acceptance criteria. |
+| `docs/multiview_scan_algorithm.md` | Publication-oriented derivation of the multiview planning algorithm. |
+| `docs/multiview_scan_method_short.md` | Condensed single-section version for a paper methods section. |
 
 ## Requirements
 
@@ -115,11 +121,21 @@ client cannot correct a wall-time MoveIt server.
 
 ## 3. Capture a multi-view scan
 
-For unattended execution, disable the current source-level debugging
-`breakpoint()`:
+The scanner loads every default parameter from
+`config/multi_view_scan.yaml`:
 
 ```bash
-PYTHONBREAKPOINT=0 python3 scripts/multi_view_scan.py
+python3 scripts/multi_view_scan.py
+```
+
+Use another experiment configuration with `--config`. Any explicitly supplied
+command-line option overrides the value in that YAML file:
+
+```bash
+python3 scripts/multi_view_scan.py \
+  --config config/multi_view_scan.yaml \
+  --view-count 32 \
+  --minimum-neighbor-overlap 0.45
 ```
 
 The scan defaults to simulated time and verifies that `/clock` advances before
@@ -129,22 +145,81 @@ moving. It then:
   directories, then creates a clean `steps` directory;
 - checks both synchronized RGB-D streams and required TF frames;
 - attempts to move `dual_arm` to the SRDF `ready` state;
+- generates mirrored, equal-area golden-angle spiral camera pairs;
+- sends each pair to collision-aware multi-tip `/compute_ik` without moving the
+  robot and removes any unreachable pair;
+- forms a pose- or joint-distance nearest-neighbor open-TSP path and improves
+  it with 2-opt;
+- permits a temporal edge only when projected surface overlap meets
+  `--minimum-neighbor-overlap` for both cameras;
+- publishes the complete IK waypoint sequence on `/display_planned_path` and
+  the optimized camera routes on `/scan/left_camera_path` and
+  `/scan/right_camera_path` before the first scan motion;
 - publishes camera and TCP target frames for RViz preview;
-- sends both arm targets together with `move_dual`;
+- sends both arm targets together with `move_l_dual`;
 - continues to the next viewpoint when a motion call raises `RobotAPIError`;
 - saves images under `scan_output/steps/step_001`, `step_002`, and so on;
-- saves successful capture records and relative image paths in
-  `scan_output/manifest.json`.
+- saves IK rejections, before/after path metrics, optimized spiral order,
+  successful capture records, and relative image paths in
+  `scan_output/manifest.json`;
+- attempts to return to `ready` after the scan.
 
 Useful options include:
 
 ```bash
-PYTHONBREAKPOINT=0 python3 scripts/multi_view_scan.py \
+python3 scripts/multi_view_scan.py \
   --output-dir scan_output \
   --center 0.40 0.0 0.0 \
   --radius 0.4 \
+  --view-count 30 \
+  --azimuth-bounds 10 135 \
+  --elevation-bounds 30 75 \
+  --scan-volume-radius 0.15 \
+  --projection-samples 2048 \
+  --minimum-neighbor-overlap 0.35 \
+  --overlap-weight 0.5 \
+  --distance-metric pose \
+  --pose-translation-weight 1.0 \
+  --pose-rotation-weight 0.10 \
+  --two-opt-passes 30 \
+  --ik-timeout 0.25 \
+  --trajectory-point-time 0.25 \
+  --trajectory-preview-time 5 \
   --camera-timeout 10 \
   --motion-timeout 120
+```
+
+The overlap model projects a deterministic spherical surface proxy through the
+intrinsics in `--camera-yaml`. If planning cannot connect all reachable poses
+at the requested threshold, the scan stops before executing a view. Reduce
+`--minimum-neighbor-overlap`, increase `--view-count`, or narrow the angular
+bounds. `--overlap-weight` trades a shorter path under the selected motion
+metric against greater neighbor overlap while the threshold remains a hard
+constraint.
+
+The default YAML uses `distance_metric: pose`. For two paired viewpoints, pose
+distance combines the root-sum-square translation of both TCPs with their
+shortest orientation changes. `pose_translation_weight` scales translation,
+while `pose_rotation_weight` converts radians to equivalent translation cost.
+Use `--distance-metric joint` to restore Euclidean distance between the
+multi-tip IK joint solutions.
+
+To inspect the complete route in RViz before execution, use the MoveIt Motion
+Planning display subscribed to `/display_planned_path` and add two `Path`
+displays for `/scan/left_camera_path` and `/scan/right_camera_path`. The
+publishers use transient-local durability; configure the RViz Path displays to
+use `Transient Local` durability if RViz connects after publication. The robot
+animation connects collision-checked IK waypoints for preview only; the
+interpolated full route is not itself a prevalidated MoveIt trajectory. Each
+actual `move_l_dual` request still performs its normal runtime planning and
+validation. Set `--trajectory-preview-time 0` to publish without waiting.
+
+Run the offline planner tests without commanding the robot:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Projects/dual_arm_ws/install/setup.bash
+python3 -m unittest discover -s tests -v
 ```
 
 Use `--no-use-sim-time` only when the entire ROS graph is running on wall time,
@@ -315,12 +390,6 @@ state monitors, so a clean restart is preferred.
 
 Install Open3D in the same Python environment used to run the offline scripts.
 ROS sourcing does not install the `open3d` Python package.
-
-### Scan pauses before every motion
-
-`multi_view_scan.py` currently contains an intentional debugging
-`breakpoint()`. Press `c` to continue interactively, or launch with
-`PYTHONBREAKPOINT=0` for an uninterrupted scan.
 
 ## Safety
 
