@@ -1,0 +1,3 @@
+scan_output/*
+*.zip
+__pycache__/
