@@ -3,7 +3,7 @@ from pathlib import Path
 
 EXECUTE_GRASP = True
 GRASP_CALL_TIMEOUT = 120.0
-grasp_output_path = Path("/home/hier-tony/Projects/vla_dual_arm/scan_output/grasp_commands/mustard_bottle.json")
+grasp_output_path = Path("/home/hier-tony/Projects/vla_dual_arm/scan_output/grasp_commands/hammer.json")
 
 # Reload and validate the serialized file that will drive RobotAPI.
 validated_grasp_plan = load_grasp_plan(grasp_output_path, maximum_opening_m = 0.15)

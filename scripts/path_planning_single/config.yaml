@@ -1,0 +1,50 @@
+single_path_planning:
+  # FR3 defaults. Override planning_group and ik_link_name for another robot.
+  planning_group: fr3_arm
+  ik_link_name: fr3_hand_tcp
+  world_frame: world
+  compute_ik_service: /compute_ik
+  joint_state_topic: /joint_states
+  use_sim_time: true
+  avoid_collisions: true
+  service_timeout: 5.0
+  joint_state_timeout: 3.0
+  ik_timeout: 0.25
+
+  # Camera sampling and camera-to-IK-link calibration.
+  center: [0.45, 0.0, 0.20]
+  radius: 0.40
+  view_count: 40
+  elevation_bounds: [15.0, 80.0]
+  azimuth_offset_deg: 0.0
+  camera_to_ik_link_xyz: [0.0, 0.0, 0.0]
+  camera_to_ik_link_rpy_deg: [0.0, 0.0, 0.0]
+  excluded_joint_substrings: [finger, gripper]
+
+  # Projection-overlap path objective.
+  camera_yaml: /home/hier-tony/Projects/dual_manipulation_isaac_sim/env/urdf/camera.yaml
+  scan_volume_radius: 0.15
+  projection_samples: 2048
+  minimum_neighbor_overlap: 0.30
+  overlap_weight: 0.50
+  two_opt_passes: 30
+
+  # RViz and experiment output.
+  hemisphere_topic: /single_path_planning/hemisphere
+  candidate_topic: /single_path_planning/candidates
+  before_path_topic: /single_path_planning/path_before_2opt
+  after_path_topic: /single_path_planning/path_after_2opt
+  comparison_topic: /single_path_planning/path_comparison
+  before_display_topic: /single_path_planning/display_before_2opt
+  after_display_topic: /single_path_planning/display_after_2opt
+  hemisphere_color_rgb: [0, 180, 255]
+  hemisphere_alpha: 0.16
+  hemisphere_azimuth_segments: 64
+  hemisphere_elevation_segments: 16
+  before_color_rgb: [255, 0, 255]
+  after_color_rgb: [25, 255, 0]
+  line_width: 0.012
+  point_size: 0.022
+  trajectory_point_time: 0.25
+  result_json: single_path_planning_result.json
+  hold_seconds: 0.0

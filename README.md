@@ -25,6 +25,7 @@ and execute a selected grasp through `RobotAPI`.
 | `scripts/run_random_objects.sh` | Spawn five random objects from the configured YCB pool. |
 | `scripts/multi_view_scan.py` | Reachability-filtered, overlap-aware dual-arm scan and RGB-D capture. |
 | `scripts/scan_trajectory.py` | Pure spiral generation, projection overlap, open-TSP, and constrained 2-opt. |
+| `scripts/path_planning_single/` | No-motion single-arm MoveIt IK experiment and RViz paper visualization. |
 | `scripts/moveit_ik.py` | Read-only collision-aware MoveIt multi-tip IK client. |
 | `config/multi_view_scan.yaml` | Complete configurable parameter set for multiview scanning. |
 | `scripts/scene_reconstruction.py` | Merge captured RGB-D views into a world-frame scene cloud. |
