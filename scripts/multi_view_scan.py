@@ -238,7 +238,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--display-trajectory-topic",
         default="/display_planned_path",
-        help="MoveIt DisplayTrajectory topic used for the full waypoint preview",
+        help="MoveIt DisplayTrajectory topic for the route after 2-opt",
+    )
+    parser.add_argument(
+        "--initial-display-trajectory-topic",
+        default="/scan/display_trajectory_before_2opt",
+        help="MoveIt DisplayTrajectory topic for the greedy route before 2-opt",
     )
     parser.add_argument(
         "--left-camera-path-topic",
@@ -249,6 +254,43 @@ def build_parser() -> argparse.ArgumentParser:
         "--right-camera-path-topic",
         default="/scan/right_camera_path",
         help="nav_msgs/Path topic for the optimized right-camera route",
+    )
+    parser.add_argument(
+        "--trajectory-comparison-topic",
+        default="/scan/trajectory_comparison",
+        help="MarkerArray topic containing wide before/after camera routes",
+    )
+    parser.add_argument(
+        "--before-trajectory-marker-topic",
+        default="/scan/trajectory_before_2opt",
+        help="MarkerArray topic containing only the route before 2-opt",
+    )
+    parser.add_argument(
+        "--optimized-trajectory-marker-topic",
+        default="/scan/trajectory_after_2opt",
+        help="MarkerArray topic containing only the route after 2-opt",
+    )
+    parser.add_argument(
+        "--trajectory-line-width",
+        type=float,
+        default=0.015,
+        help="width in meters of RViz trajectory comparison lines",
+    )
+    parser.add_argument(
+        "--before-trajectory-color-rgb",
+        type=int,
+        nargs=3,
+        default=(255, 0, 255),
+        metavar=("R", "G", "B"),
+        help="RGB color for the greedy route before 2-opt",
+    )
+    parser.add_argument(
+        "--optimized-trajectory-color-rgb",
+        type=int,
+        nargs=3,
+        default=(25, 255, 0),
+        metavar=("R", "G", "B"),
+        help="RGB color for the optimized route after 2-opt",
     )
     parser.add_argument(
         "--ik-timeout",
@@ -338,7 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="seconds to show the complete RViz preview before the first motion",
     )
-    parser.add_argument("--settle-time", type=float, default=1.0)
+    parser.add_argument("--settle-time", type=float, default=3.0)
     return parser
 
 
@@ -372,6 +414,7 @@ def validate_args(args: argparse.Namespace) -> None:
         "joint_state_timeout",
         "scan_volume_radius",
         "trajectory_point_time",
+        "trajectory_line_width",
     ):
         if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0.0:
             raise ValueError(f"{name.replace('_', '-')} must be greater than zero")
@@ -389,6 +432,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("pose-distance weights must be nonnegative and not both zero")
     if args.two_opt_passes < 0:
         raise ValueError("two-opt-passes must be nonnegative")
+    for name in ("before_trajectory_color_rgb", "optimized_trajectory_color_rgb"):
+        components = getattr(args, name)
+        if len(components) != 3 or any(
+            not 0 <= component <= 255 for component in components
+        ):
+            raise ValueError(
+                f"{name.replace('_', '-')} must contain three values in [0, 255]"
+            )
     if not math.isfinite(args.settle_time) or args.settle_time < 0.0:
         raise ValueError("settle-time must not be negative")
     if not math.isfinite(args.target_preview_time) or args.target_preview_time < 0.0:
@@ -518,7 +569,7 @@ def optimize_viewpoint_path(
     center: np.ndarray,
     intrinsics: CameraIntrinsics,
     args: argparse.Namespace,
-) -> tuple[list[ReachableViewpoint], dict]:
+) -> tuple[list[ReachableViewpoint], list[ReachableViewpoint], dict]:
     """Build a constrained open TSP path and refine it with deterministic 2-opt."""
     projection_points = sample_scan_volume(
         center, args.scan_volume_radius, args.projection_samples
@@ -604,7 +655,11 @@ def optimize_viewpoint_path(
         "optimized_metrics": asdict(optimized_metrics),
         "optimized_neighbor_overlaps": neighbor_overlaps,
     }
-    return [reachable[index] for index in optimized_path], diagnostics
+    return (
+        [reachable[index] for index in initial_path],
+        [reachable[index] for index in optimized_path],
+        diagnostics,
+    )
 
 
 def reachable_viewpoint_record(
@@ -683,9 +738,18 @@ def run_scan(args: argparse.Namespace) -> None:
             "ik_service": args.ik_service,
             "ik_timeout_s": args.ik_timeout,
             "trajectory_visualization": {
-                "display_trajectory_topic": args.display_trajectory_topic,
+                "before_2opt_display_trajectory_topic": (
+                    args.initial_display_trajectory_topic
+                ),
+                "after_2opt_display_trajectory_topic": args.display_trajectory_topic,
                 "left_camera_path_topic": args.left_camera_path_topic,
                 "right_camera_path_topic": args.right_camera_path_topic,
+                "comparison_marker_topic": args.trajectory_comparison_topic,
+                "before_2opt_marker_topic": args.before_trajectory_marker_topic,
+                "after_2opt_marker_topic": args.optimized_trajectory_marker_topic,
+                "line_width_m": args.trajectory_line_width,
+                "before_2opt_color_rgb": list(args.before_trajectory_color_rgb),
+                "after_2opt_color_rgb": list(args.optimized_trajectory_color_rgb),
                 "point_interval_s": args.trajectory_point_time,
                 "preview_time_s": args.trajectory_preview_time,
                 "continuous_path_collision_checked": False,
@@ -723,8 +787,16 @@ def run_scan(args: argparse.Namespace) -> None:
                 service_name=args.ik_service,
                 joint_state_topic=args.joint_state_topic,
                 display_trajectory_topic=args.display_trajectory_topic,
+                initial_display_trajectory_topic=(
+                    args.initial_display_trajectory_topic
+                ),
                 left_camera_path_topic=args.left_camera_path_topic,
                 right_camera_path_topic=args.right_camera_path_topic,
+                trajectory_comparison_topic=args.trajectory_comparison_topic,
+                before_trajectory_marker_topic=args.before_trajectory_marker_topic,
+                optimized_trajectory_marker_topic=(
+                    args.optimized_trajectory_marker_topic
+                ),
                 use_sim_time=args.use_sim_time,
             )
         )
@@ -788,14 +860,16 @@ def run_scan(args: argparse.Namespace) -> None:
         current_right_tcp = actual_camera_transform(
             robot, args.world_frame, args.right_tcp_frame, args.tf_timeout
         )
-        optimized_viewpoints, path_diagnostics = optimize_viewpoint_path(
-            reachable,
-            start_joint_values,
-            current_left_tcp,
-            current_right_tcp,
-            center,
-            intrinsics,
-            args,
+        initial_viewpoints, optimized_viewpoints, path_diagnostics = (
+            optimize_viewpoint_path(
+                reachable,
+                start_joint_values,
+                current_left_tcp,
+                current_right_tcp,
+                center,
+                intrinsics,
+                args,
+            )
         )
         manifest["planner"].update(
             {
@@ -830,14 +904,34 @@ def run_scan(args: argparse.Namespace) -> None:
         center_pose = matrix_from_pose(center, [0, 0, 0, 1])
         robot.publish_static_transform(args.world_frame, "scan_center", center_pose)
 
-        # Publish the entire optimized route before executing its first motion.
+        # Publish both complete routes before executing the optimized motion.
         current_left_camera = actual_camera_transform(
             robot, args.world_frame, args.left_camera_frame, args.tf_timeout
         )
         current_right_camera = actual_camera_transform(
             robot, args.world_frame, args.right_camera_frame, args.tf_timeout
         )
-        left_preview_poses = [
+        before_left_preview_poses = [
+            RobotAPI.pose(*matrix_to_pose(transform))
+            for transform in [
+                current_left_camera,
+                *[
+                    item.viewpoint.left_camera_pose
+                    for item in initial_viewpoints
+                ],
+            ]
+        ]
+        before_right_preview_poses = [
+            RobotAPI.pose(*matrix_to_pose(transform))
+            for transform in [
+                current_right_camera,
+                *[
+                    item.viewpoint.right_camera_pose
+                    for item in initial_viewpoints
+                ],
+            ]
+        ]
+        optimized_left_preview_poses = [
             RobotAPI.pose(*matrix_to_pose(transform))
             for transform in [
                 current_left_camera,
@@ -847,7 +941,7 @@ def run_scan(args: argparse.Namespace) -> None:
                 ],
             ]
         ]
-        right_preview_poses = [
+        optimized_right_preview_poses = [
             RobotAPI.pose(*matrix_to_pose(transform))
             for transform in [
                 current_right_camera,
@@ -857,24 +951,36 @@ def run_scan(args: argparse.Namespace) -> None:
                 ],
             ]
         ]
-        ik_client.publish_trajectory_preview(
+        ik_client.publish_trajectory_comparison(
             joint_names=joint_names,
             start_positions=start_joint_values,
-            waypoint_positions=[
+            before_waypoint_positions=[
+                item.joint_values for item in initial_viewpoints
+            ],
+            optimized_waypoint_positions=[
                 item.joint_values for item in optimized_viewpoints
             ],
             frame_id=args.world_frame,
-            left_camera_poses=left_preview_poses,
-            right_camera_poses=right_preview_poses,
+            before_left_camera_poses=before_left_preview_poses,
+            before_right_camera_poses=before_right_preview_poses,
+            optimized_left_camera_poses=optimized_left_preview_poses,
+            optimized_right_camera_poses=optimized_right_preview_poses,
             point_interval=args.trajectory_point_time,
+            line_width=args.trajectory_line_width,
+            before_color_rgb=args.before_trajectory_color_rgb,
+            optimized_color_rgb=args.optimized_trajectory_color_rgb,
         )
         print(
-            "Published full RViz trajectory preview: "
-            f"robot={args.display_trajectory_topic}, "
-            f"left camera={args.left_camera_path_topic}, "
-            f"right camera={args.right_camera_path_topic}"
+            "Published RViz trajectory comparison: "
+            f"before={args.initial_display_trajectory_topic}, "
+            f"after={args.display_trajectory_topic}, "
+            f"wide lines={args.trajectory_comparison_topic}, "
+            f"isolated before={args.before_trajectory_marker_topic}, "
+            f"isolated after={args.optimized_trajectory_marker_topic}"
         )
-        animation_duration = len(optimized_viewpoints) * args.trajectory_point_time
+        animation_duration = max(
+            len(initial_viewpoints), len(optimized_viewpoints)
+        ) * args.trajectory_point_time
         preview_wait = (
             max(args.trajectory_preview_time, animation_duration)
             if args.trajectory_preview_time
@@ -894,7 +1000,7 @@ def run_scan(args: argparse.Namespace) -> None:
             time.sleep(preview_wait)
 
         # Execute the optimized path; failures remain recorded but do not stop the scan.
-        # breakpoint()
+        breakpoint()
         for step_number, reachable_viewpoint in enumerate(
             optimized_viewpoints, start=1
         ):

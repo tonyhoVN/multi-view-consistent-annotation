@@ -156,9 +156,10 @@ complete path. We then apply deterministic best-improvement 2-opt: every
 subsequence reversal is considered, candidates violating any overlap constraint
 are discarded, and the lowest-cost strict improvement is accepted. Refinement
 ends when no improvement exists or the pass limit is reached. Before motion,
-the complete IK waypoint sequence is published as a MoveIt display trajectory
-and both camera routes are published as world-frame RViz paths. Individual
-target TFs are also published before their corresponding motions. Both arms are
+the greedy and refined IK waypoint sequences are published as separate MoveIt
+display trajectories. Their dual-camera routes are simultaneously rendered as
+wide, contrasting world-frame RViz line strips. Individual target TFs are also
+published before their corresponding motions. Both arms are
 then commanded together; a failed motion is recorded and skipped without
 terminating the remaining scan.
 

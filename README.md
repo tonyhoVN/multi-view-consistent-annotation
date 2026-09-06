@@ -152,9 +152,8 @@ moving. It then:
   it with 2-opt;
 - permits a temporal edge only when projected surface overlap meets
   `--minimum-neighbor-overlap` for both cameras;
-- publishes the complete IK waypoint sequence on `/display_planned_path` and
-  the optimized camera routes on `/scan/left_camera_path` and
-  `/scan/right_camera_path` before the first scan motion;
+- publishes separate IK waypoint animations before and after 2-opt, plus wide
+  neon camera-route overlays on `/scan/trajectory_comparison`, before motion;
 - publishes camera and TCP target frames for RViz preview;
 - sends both arm targets together with `move_l_dual`;
 - continues to the next viewpoint when a motion call raises `RobotAPIError`;
@@ -183,6 +182,9 @@ python3 scripts/multi_view_scan.py \
   --pose-rotation-weight 0.10 \
   --two-opt-passes 30 \
   --ik-timeout 0.25 \
+  --trajectory-line-width 0.015 \
+  --before-trajectory-color-rgb 255 0 255 \
+  --optimized-trajectory-color-rgb 25 255 0 \
   --trajectory-point-time 0.25 \
   --trajectory-preview-time 5 \
   --camera-timeout 10 \
@@ -204,15 +206,26 @@ while `pose_rotation_weight` converts radians to equivalent translation cost.
 Use `--distance-metric joint` to restore Euclidean distance between the
 multi-tip IK joint solutions.
 
-To inspect the complete route in RViz before execution, use the MoveIt Motion
-Planning display subscribed to `/display_planned_path` and add two `Path`
-displays for `/scan/left_camera_path` and `/scan/right_camera_path`. The
-publishers use transient-local durability; configure the RViz Path displays to
-use `Transient Local` durability if RViz connects after publication. The robot
-animation connects collision-checked IK waypoints for preview only; the
-interpolated full route is not itself a prevalidated MoveIt trajectory. Each
-actual `move_l_dual` request still performs its normal runtime planning and
-validation. Set `--trajectory-preview-time 0` to publish without waiting.
+To compare routes in RViz, add a `MarkerArray` display subscribed to
+`/scan/trajectory_comparison`. The greedy route before 2-opt is neon magenta
+`(255, 0, 255)` and the optimized route is neon green `(25, 255, 0)`; each
+color contains one line strip per camera. The default line width is 0.015 m.
+On shared edges, the pre-2-opt path is rendered 1.6 times wider and translucent
+as a magenta halo, with the opaque optimized green route rendered over its
+center so neither route is hidden by coplanar overlap.
+The two routes are also published independently on
+`/scan/trajectory_before_2opt` and `/scan/trajectory_after_2opt`. Add a separate
+`MarkerArray` display for each topic to verify them independently or toggle
+either route without relying on the combined rendering.
+For robot animations, use two MoveIt Motion Planning displays subscribed to
+`/scan/display_trajectory_before_2opt` and `/display_planned_path`, respectively.
+The optimized camera poses also remain available as `Path` messages on
+`/scan/left_camera_path` and `/scan/right_camera_path`. All preview publishers
+use transient-local durability. These lines and animations connect
+collision-checked IK waypoints, but the interpolated route is not itself a
+continuously collision-checked MoveIt trajectory. Each actual `move_l_dual`
+request still performs runtime planning and validation. Set
+`--trajectory-preview-time 0` to publish without waiting.
 
 Run the offline planner tests without commanding the robot:
 

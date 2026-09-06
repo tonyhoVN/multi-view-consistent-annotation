@@ -571,7 +571,8 @@ The implemented execution order is:
 11. Construct the multi-start constrained nearest-neighbor path.
 12. Refine the complete open path using overlap-constrained 2-opt.
 13. Write all planning diagnostics to the scan manifest.
-14. Publish the complete IK waypoint animation and both camera paths for RViz.
+14. Publish pre-2-opt and post-2-opt IK animations and both dual-camera paths
+    as contrasting, wide RViz line strips.
 15. Publish each selected camera and TCP target TF before its motion.
 16. Move both arms simultaneously and capture synchronized RGB-D images.
 17. Record and skip individual motion failures without ending the scan.

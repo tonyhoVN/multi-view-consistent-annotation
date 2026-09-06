@@ -21,6 +21,8 @@ from moveit_ik import (  # noqa: E402
     IKResult,
     build_camera_path,
     build_display_trajectory,
+    build_trajectory_markers,
+    split_trajectory_markers,
 )
 from multi_view_scan import (  # noqa: E402
     DEFAULT_SCAN_CONFIG,
@@ -215,7 +217,10 @@ class ScanIntegrationHelperTests(unittest.TestCase):
         }
 
         self.assertEqual(set(configured), expected)
-        self.assertEqual(parse_args([]).distance_metric, "pose")
+        defaults = parse_args([])
+        self.assertEqual(defaults.distance_metric, "pose")
+        self.assertEqual(defaults.before_trajectory_color_rgb, [255, 0, 255])
+        self.assertEqual(defaults.optimized_trajectory_color_rgb, [25, 255, 0])
 
     def test_cli_values_override_selected_yaml_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -259,6 +264,55 @@ class ScanIntegrationHelperTests(unittest.TestCase):
         self.assertEqual(camera_path.header.stamp.sec, 12)
         self.assertEqual(len(camera_path.poses), 2)
         self.assertAlmostEqual(camera_path.poses[-1].pose.position.x, 0.4)
+
+    def test_rviz_comparison_uses_wide_contrasting_neon_lines(self) -> None:
+        before = [Pose(), Pose()]
+        optimized = [Pose(), Pose(), Pose()]
+        before[1].position.x = 0.3
+        optimized[-1].position.y = 0.4
+
+        marker_array = build_trajectory_markers(
+            before_left_poses=before,
+            before_right_poses=before,
+            optimized_left_poses=optimized,
+            optimized_right_poses=optimized,
+            frame_id="world",
+            stamp=Time(sec=12),
+            line_width=0.015,
+            before_color_rgb=(255, 0, 255),
+            optimized_color_rgb=(25, 255, 0),
+        )
+
+        self.assertEqual(len(marker_array.markers), 5)
+        self.assertEqual(
+            marker_array.markers[0].action, marker_array.markers[0].DELETEALL
+        )
+        before_marker, _, optimized_marker, _ = marker_array.markers[1:]
+        self.assertEqual(before_marker.ns, "trajectory_0_before_2opt_left")
+        self.assertEqual(optimized_marker.ns, "trajectory_1_after_2opt_left")
+        self.assertAlmostEqual(before_marker.scale.x, 0.024)
+        self.assertAlmostEqual(optimized_marker.scale.x, 0.015)
+        self.assertAlmostEqual(before_marker.color.a, 0.55)
+        self.assertEqual(optimized_marker.color.a, 1.0)
+        self.assertEqual(len(before_marker.points), 2)
+        self.assertEqual(
+            (before_marker.color.r, before_marker.color.g, before_marker.color.b),
+            (1.0, 0.0, 1.0),
+        )
+        self.assertEqual(len(optimized_marker.points), 3)
+        self.assertAlmostEqual(optimized_marker.color.r, 25.0 / 255.0)
+        self.assertEqual(optimized_marker.color.g, 1.0)
+        self.assertEqual(optimized_marker.color.b, 0.0)
+
+        before_only, optimized_only = split_trajectory_markers(marker_array)
+        self.assertEqual(len(before_only.markers), 3)
+        self.assertEqual(len(optimized_only.markers), 3)
+        self.assertTrue(
+            all("before_2opt" in marker.ns for marker in before_only.markers[1:])
+        )
+        self.assertTrue(
+            all("after_2opt" in marker.ns for marker in optimized_only.markers[1:])
+        )
 
     def test_unreachable_candidate_is_removed_by_fake_ik(self) -> None:
         viewpoints = spiral_hemisphere_pairs(

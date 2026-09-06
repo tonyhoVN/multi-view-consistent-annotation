@@ -36,8 +36,15 @@ multi_view_scan:
 
   # Complete trajectory visualization in RViz.
   display_trajectory_topic: /display_planned_path
+  initial_display_trajectory_topic: /scan/display_trajectory_before_2opt
   left_camera_path_topic: /scan/left_camera_path
   right_camera_path_topic: /scan/right_camera_path
+  trajectory_comparison_topic: /scan/trajectory_comparison
+  before_trajectory_marker_topic: /scan/trajectory_before_2opt
+  optimized_trajectory_marker_topic: /scan/trajectory_after_2opt
+  trajectory_line_width: 0.015
+  before_trajectory_color_rgb: [255, 0, 255]
+  optimized_trajectory_color_rgb: [25, 255, 0]
   trajectory_point_time: 0.25
   trajectory_preview_time: 5.0
   target_preview_time: 1.0
