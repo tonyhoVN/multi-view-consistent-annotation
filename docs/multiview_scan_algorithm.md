@@ -699,13 +699,13 @@ scene-derived visibility, per-camera intrinsics, and online replanning.
 - Complete scan parameter configuration:
   [config/multi_view_scan.yaml](../config/multi_view_scan.yaml)
 - Spiral generation, projection, and path optimization:
-  [scripts/scan_trajectory.py](../scripts/scan_trajectory.py)
+  [scripts/multi_view_scan/scan_trajectory.py](../scripts/multi_view_scan/scan_trajectory.py)
 - Pose and look-at geometry:
-  [scripts/aux_math.py](../scripts/aux_math.py)
+  [scripts/multi_view_scan/aux_math.py](../scripts/multi_view_scan/aux_math.py)
 - Collision-aware MoveIt IK requests:
-  [scripts/moveit_ik.py](../scripts/moveit_ik.py)
+  [scripts/multi_view_scan/moveit_ik.py](../scripts/multi_view_scan/moveit_ik.py)
 - Scan execution and manifest generation:
-  [scripts/multi_view_scan.py](../scripts/multi_view_scan.py)
+  [scripts/multi_view_scan/multi_view_scan.py](../scripts/multi_view_scan/multi_view_scan.py)
 - Automated behavioral tests:
   [tests/test_scan_trajectory.py](../tests/test_scan_trajectory.py)
 - Implementation contract:

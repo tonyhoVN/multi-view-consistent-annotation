@@ -50,7 +50,7 @@ Set RViz's fixed frame to the configured `world_frame`, then add these displays:
 | RViz display | Topic | Meaning |
 |---|---|---|
 | MarkerArray | `/single_path_planning/hemisphere` | Transparent sampling shell |
-| MarkerArray | `/single_path_planning/candidates` | White reachable and red rejected samples |
+| MarkerArray | `/single_path_planning/candidates` | Red reachable dots and black X rejected samples |
 | MarkerArray | `/single_path_planning/path_before_2opt` | Greedy path, neon magenta |
 | MarkerArray | `/single_path_planning/path_after_2opt` | Final path, neon green `(25,255,0)` |
 | MarkerArray | `/single_path_planning/path_comparison` | Both paths overlaid |

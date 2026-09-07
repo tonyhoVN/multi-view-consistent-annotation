@@ -19,9 +19,9 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from aux_math import matrix_to_pose, transform_from_euler  # noqa: E402
-from moveit_ik import build_display_trajectory  # noqa: E402
-from scan_trajectory import (  # noqa: E402
+from multi_view_scan.aux_math import matrix_to_pose, transform_from_euler  # noqa: E402
+from multi_view_scan.moveit_ik import build_display_trajectory  # noqa: E402
+from multi_view_scan.scan_trajectory import (  # noqa: E402
     CameraIntrinsics,
     combined_edge_costs,
     measure_path,
@@ -108,6 +108,8 @@ def validate_configuration(config: argparse.Namespace) -> None:
         config.scan_volume_radius,
         config.line_width,
         config.point_size,
+        config.rejected_cross_size,
+        config.rejected_cross_line_width,
         config.trajectory_point_time,
     )
     if not all(math.isfinite(value) and value > 0.0 for value in positive):
@@ -116,7 +118,13 @@ def validate_configuration(config: argparse.Namespace) -> None:
         raise ValueError("minimum_neighbor_overlap must lie in [0, 1]")
     if not 0.0 <= config.hemisphere_alpha <= 1.0:
         raise ValueError("hemisphere_alpha must lie in [0, 1]")
-    for name in ("hemisphere_color_rgb", "before_color_rgb", "after_color_rgb"):
+    for name in (
+        "hemisphere_color_rgb",
+        "accepted_color_rgb",
+        "rejected_color_rgb",
+        "before_color_rgb",
+        "after_color_rgb",
+    ):
         color = getattr(config, name)
         if len(color) != 3 or any(not 0 <= int(value) <= 255 for value in color):
             raise ValueError(f"{name} must contain three values in [0, 255]")
@@ -325,27 +333,55 @@ def build_visualizations(
         )
     ]
 
-    # Show accepted samples in white and rejected IK samples in red.
-    candidates = []
-    for marker_id, (namespace, indices, color) in enumerate(
-        (
-            ("reachable_camera_samples", set(range(len(sampled))) - rejected_indices, (255, 255, 255)),
-            ("ik_rejected_camera_samples", rejected_indices, (255, 40, 40)),
+    # Reachable samples are red dots; rejected samples are tangent-plane black Xs.
+    accepted = Marker()
+    accepted.header.frame_id = frame
+    accepted.header.stamp = stamp
+    accepted.ns = "reachable_camera_samples"
+    accepted.id = 0
+    accepted.type = Marker.SPHERE_LIST
+    accepted.action = Marker.ADD
+    accepted.pose.orientation.w = 1.0
+    accepted.scale.x = accepted.scale.y = accepted.scale.z = config.point_size
+    accepted.color.r, accepted.color.g, accepted.color.b = [
+        int(value) / 255.0 for value in config.accepted_color_rgb
+    ]
+    accepted.color.a = 1.0
+    accepted_indices = set(range(len(sampled))) - rejected_indices
+    accepted.points = [
+        point_message(sampled[index].camera_pose[:3, 3])
+        for index in sorted(accepted_indices)
+    ]
+
+    rejected = Marker()
+    rejected.header.frame_id = frame
+    rejected.header.stamp = stamp
+    rejected.ns = "ik_rejected_camera_samples"
+    rejected.id = 1
+    rejected.type = Marker.LINE_LIST
+    rejected.action = Marker.ADD
+    rejected.pose.orientation.w = 1.0
+    rejected.scale.x = config.rejected_cross_line_width
+    rejected.color.r, rejected.color.g, rejected.color.b = [
+        int(value) / 255.0 for value in config.rejected_color_rgb
+    ]
+    rejected.color.a = 1.0
+
+    # Each X uses the camera-frame X/Y axes, making it tangent to the shell.
+    half_size = 0.5 * config.rejected_cross_size
+    for index in sorted(rejected_indices):
+        pose = sampled[index].camera_pose
+        center_point = pose[:3, 3]
+        first_diagonal = (pose[:3, 0] + pose[:3, 1]) / math.sqrt(2.0)
+        second_diagonal = (pose[:3, 0] - pose[:3, 1]) / math.sqrt(2.0)
+        rejected.points.extend(
+            [
+                point_message(center_point - half_size * first_diagonal),
+                point_message(center_point + half_size * first_diagonal),
+                point_message(center_point - half_size * second_diagonal),
+                point_message(center_point + half_size * second_diagonal),
+            ]
         )
-    ):
-        marker = Marker()
-        marker.header.frame_id = frame
-        marker.header.stamp = stamp
-        marker.ns = namespace
-        marker.id = marker_id
-        marker.type = Marker.SPHERE_LIST
-        marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = marker.scale.y = marker.scale.z = config.point_size
-        marker.color.r, marker.color.g, marker.color.b = [value / 255.0 for value in color]
-        marker.color.a = 1.0
-        marker.points = [point_message(sampled[index].camera_pose[:3, 3]) for index in sorted(indices)]
-        candidates.append(marker)
 
     initial_poses = [reachable[index].viewpoint.camera_pose for index in initial_order]
     optimized_poses = [reachable[index].viewpoint.camera_pose for index in optimized_order]
@@ -368,7 +404,7 @@ def build_visualizations(
     )
     return {
         "hemisphere": MarkerArray(markers=[reset_marker(frame, stamp), shell]),
-        "candidates": MarkerArray(markers=[reset_marker(frame, stamp), *candidates]),
+        "candidates": MarkerArray(markers=[reset_marker(frame, stamp), accepted, rejected]),
         "before_path": MarkerArray(markers=[reset_marker(frame, stamp), before]),
         "after_path": MarkerArray(markers=[reset_marker(frame, stamp), after]),
         "comparison": MarkerArray(markers=[reset_marker(frame, stamp), before, after]),

@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 import json
 import math
 from pathlib import Path
+import sys
 from typing import Any, Optional, Sequence
 
 import numpy as np
@@ -21,8 +22,12 @@ import numpy.typing as npt
 import open3d as o3d
 from scipy.spatial import cKDTree
 
-from aux_math import matrix_to_pose
-from o3d_process import (
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from multi_view_scan.aux_math import matrix_to_pose  # noqa: E402
+from scene_reconstruction.o3d_process import (  # noqa: E402
     estimate_outward_normals,
     estimate_principal_curvature_directions,
     point_array,

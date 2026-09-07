@@ -13,13 +13,21 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+import sys
 from typing import Any
 
 import cv2
 import numpy as np
 import yaml
 
-from aux_math import matrix_from_pose, transform_from_euler
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from multi_view_scan.aux_math import (  # noqa: E402
+    matrix_from_pose,
+    transform_from_euler,
+)
 
 
 DEFAULT_CAMERA_YAML = Path(
@@ -209,7 +217,7 @@ def reconstruct_scene(
     """Back-project, world-transform, merge, and filter all RGB-D views."""
     try:
         import open3d as o3d
-        from o3d_process import rgbd_to_pcd
+        from scene_reconstruction.o3d_process import rgbd_to_pcd
     except ImportError as error:
         raise RuntimeError(
             "scene reconstruction requires Open3D; install the 'open3d' Python package"

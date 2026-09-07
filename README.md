@@ -22,18 +22,18 @@ and execute a selected grasp through `RobotAPI`.
 
 | Path | Purpose |
 | --- | --- |
-| `scripts/run_random_objects.sh` | Spawn five random objects from the configured YCB pool. |
-| `scripts/multi_view_scan.py` | Reachability-filtered, overlap-aware dual-arm scan and RGB-D capture. |
-| `scripts/scan_trajectory.py` | Pure spiral generation, projection overlap, open-TSP, and constrained 2-opt. |
+| `scripts/scene_reconstruction/run_random_objects.sh` | Spawn five random objects from the configured YCB pool. |
+| `scripts/multi_view_scan/multi_view_scan.py` | Reachability-filtered, overlap-aware dual-arm scan and RGB-D capture. |
+| `scripts/multi_view_scan/scan_trajectory.py` | Pure spiral generation, projection overlap, open-TSP, and constrained 2-opt. |
 | `scripts/path_planning_single/` | No-motion single-arm MoveIt IK experiment and RViz paper visualization. |
-| `scripts/moveit_ik.py` | Read-only collision-aware MoveIt multi-tip IK client. |
+| `scripts/multi_view_scan/moveit_ik.py` | Read-only collision-aware MoveIt multi-tip IK client. |
 | `config/multi_view_scan.yaml` | Complete configurable parameter set for multiview scanning. |
-| `scripts/scene_reconstruction.py` | Merge captured RGB-D views into a world-frame scene cloud. |
-| `scripts/vision_pipeline.ipynb` | Qwen3-VL detection, SAM segmentation, point-cloud generation, and grasp workflow. |
-| `scripts/grasp_sampling.py` | Principal-curvature grasp sampling, collision checks, scoring, and command export. |
-| `scripts/execute_grasp.py` | Validate, print, and optionally execute a grasp command. |
-| `scripts/o3d_process.py` | Shared Open3D and point-cloud utilities. |
-| `scripts/aux_math.py` | Shared pose, transform, and hemisphere geometry utilities. |
+| `scripts/scene_reconstruction/scene_reconstruction.py` | Merge captured RGB-D views into a world-frame scene cloud. |
+| `scripts/scene_reconstruction/vision_pipeline.ipynb` | Qwen3-VL detection, SAM segmentation, point-cloud generation, and grasp workflow. |
+| `scripts/grasping/grasp_sampling.py` | Principal-curvature grasp sampling, collision checks, scoring, and command export. |
+| `scripts/grasping/execute_grasp.py` | Validate, print, and optionally execute a grasp command. |
+| `scripts/scene_reconstruction/o3d_process.py` | Shared Open3D and point-cloud utilities. |
+| `scripts/multi_view_scan/aux_math.py` | Shared pose, transform, and hemisphere geometry utilities. |
 | `TASK.md` | Detailed multiview trajectory-planning contract and acceptance criteria. |
 | `docs/multiview_scan_algorithm.md` | Publication-oriented derivation of the multiview planning algorithm. |
 | `docs/multiview_scan_method_short.md` | Condensed single-section version for a paper methods section. |
@@ -73,7 +73,7 @@ the repository root as shown below.
 ## 1. Spawn random objects in Isaac Sim
 
 ```bash
-./scripts/run_random_objects.sh
+./scripts/scene_reconstruction/run_random_objects.sh
 ```
 
 The launcher asks `run_simulation_obj.py` to choose five unique objects, place
@@ -83,13 +83,13 @@ The duplicated `Strawberry` entry from the original list is included only once.
 Use a fixed seed for a repeatable scene:
 
 ```bash
-./scripts/run_random_objects.sh --seed 42
+./scripts/scene_reconstruction/run_random_objects.sh --seed 42
 ```
 
 Additional arguments are forwarded to `run_simulation_obj.py`, for example:
 
 ```bash
-./scripts/run_random_objects.sh --headless --seed 42
+./scripts/scene_reconstruction/run_random_objects.sh --headless --seed 42
 ```
 
 ## 2. Start MoveIt and the robot services
@@ -126,14 +126,14 @@ The scanner loads every default parameter from
 `config/multi_view_scan.yaml`:
 
 ```bash
-python3 scripts/multi_view_scan.py
+python3 scripts/multi_view_scan/multi_view_scan.py
 ```
 
 Use another experiment configuration with `--config`. Any explicitly supplied
 command-line option overrides the value in that YAML file:
 
 ```bash
-python3 scripts/multi_view_scan.py \
+python3 scripts/multi_view_scan/multi_view_scan.py \
   --config config/multi_view_scan.yaml \
   --view-count 32 \
   --minimum-neighbor-overlap 0.45
@@ -167,7 +167,7 @@ moving. It then:
 Useful options include:
 
 ```bash
-python3 scripts/multi_view_scan.py \
+python3 scripts/multi_view_scan/multi_view_scan.py \
   --output-dir scan_output \
   --center 0.40 0.0 0.0 \
   --radius 0.4 \
@@ -251,7 +251,7 @@ Depth remains a raw `sensor_msgs/Image` stream.
 Validate the manifest, images, and calibration without loading Open3D:
 
 ```bash
-python3 scripts/scene_reconstruction.py \
+python3 scripts/scene_reconstruction/scene_reconstruction.py \
   --scan-dir scan_output \
   --validate-only
 ```
@@ -259,7 +259,7 @@ python3 scripts/scene_reconstruction.py \
 Build and display the world-frame point cloud:
 
 ```bash
-python3 scripts/scene_reconstruction.py \
+python3 scripts/scene_reconstruction/scene_reconstruction.py \
   --scan-dir scan_output \
   --visualize
 ```
@@ -284,7 +284,7 @@ planned camera poses instead.
 Open the notebook:
 
 ```bash
-jupyter lab scripts/vision_pipeline.ipynb
+jupyter lab scripts/scene_reconstruction/vision_pipeline.ipynb
 ```
 
 The segmentation section reads color images, depth images, and camera poses
@@ -320,7 +320,7 @@ The notebook includes grasp sampling and visualization. The same operation can
 be run from the command line after object clouds have been saved:
 
 ```bash
-python3 scripts/grasp_sampling.py \
+python3 scripts/grasping/grasp_sampling.py \
   scan_output/pointclouds/apple.json \
   --scene-cloud scan_output/pointclouds/scene.json \
   --object-name Apple \
@@ -346,7 +346,7 @@ Gripper-frame convention:
 Always perform a dry run first:
 
 ```bash
-python3 scripts/execute_grasp.py scan_output/grasp_commands/apple.json
+python3 scripts/grasping/execute_grasp.py scan_output/grasp_commands/apple.json
 ```
 
 The dry run validates the score, opening, frames, action order, and pose values,
@@ -355,7 +355,7 @@ then prints every command without moving the robot.
 Execute only after checking the visualized grasp and planning scene:
 
 ```bash
-python3 scripts/execute_grasp.py \
+python3 scripts/grasping/execute_grasp.py \
   scan_output/grasp_commands/apple.json \
   --minimum-score 0.2 \
   --execute

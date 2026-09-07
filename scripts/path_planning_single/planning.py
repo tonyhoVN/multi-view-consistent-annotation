@@ -9,8 +9,8 @@ from typing import Sequence
 import numpy as np
 import numpy.typing as npt
 
-from aux_math import look_at_camera_pose
-from scan_trajectory import CameraIntrinsics, projected_overlap
+from multi_view_scan.aux_math import look_at_camera_pose
+from multi_view_scan.scan_trajectory import CameraIntrinsics, projected_overlap
 
 
 @dataclass(frozen=True)

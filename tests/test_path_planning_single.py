@@ -51,20 +51,28 @@ class SinglePathPlanningTests(unittest.TestCase):
 
     def test_hemisphere_marker_has_valid_unit_scale(self) -> None:
         config = load_configuration([])
-        sampled = sample_hemisphere(config.center, config.radius, 2, (15.0, 80.0))
+        sampled = sample_hemisphere(config.center, config.radius, 3, (15.0, 80.0))
         reachable = [
             ReachableViewpoint(viewpoint, viewpoint.camera_pose, np.zeros(7))
-            for viewpoint in sampled
+            for viewpoint in sampled[:2]
         ]
 
         messages = build_visualizations(
-            config, sampled, reachable, set(), [0, 1], [1, 0], Time()
+            config, sampled, reachable, {2}, [0, 1], [1, 0], Time()
         )
         shell = messages["hemisphere"].markers[1]
+        accepted = messages["candidates"].markers[1]
+        rejected = messages["candidates"].markers[2]
 
         self.assertEqual((shell.scale.x, shell.scale.y, shell.scale.z), (1.0, 1.0, 1.0))
         self.assertGreater(shell.color.a, 0.0)
         self.assertLess(shell.color.a, 1.0)
+        self.assertEqual(accepted.type, accepted.SPHERE_LIST)
+        self.assertEqual((accepted.color.r, accepted.color.g, accepted.color.b), (1.0, 40.0 / 255.0, 40.0 / 255.0))
+        self.assertEqual(len(accepted.points), 2)
+        self.assertEqual(rejected.type, rejected.LINE_LIST)
+        self.assertEqual((rejected.color.r, rejected.color.g, rejected.color.b), (0.0, 0.0, 0.0))
+        self.assertEqual(len(rejected.points), 4)
 
     def test_single_arm_joint_distance_is_symmetric(self) -> None:
         pose = np.eye(4)

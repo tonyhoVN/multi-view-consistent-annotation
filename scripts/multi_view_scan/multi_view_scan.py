@@ -20,19 +20,24 @@ import json
 import math
 from pathlib import Path
 import shutil
+import sys
 import time
 
 import numpy as np
 import yaml
 
-from aux_math import (
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from multi_view_scan.aux_math import (  # noqa: E402
     matrix_from_pose,
     matrix_to_pose,
     transform_from_euler,
 )
-from moveit_ik import MoveItIKClient
-from robot_api import RobotAPI, RobotAPIError
-from scan_trajectory import (
+from multi_view_scan.moveit_ik import MoveItIKClient  # noqa: E402
+from robot_api import RobotAPI, RobotAPIError  # noqa: E402
+from multi_view_scan.scan_trajectory import (  # noqa: E402
     CameraIntrinsics,
     ReachableViewpoint,
     SpiralViewpoint,
@@ -53,7 +58,7 @@ DEFAULT_CAMERA_YAML = Path(
     "/home/hier-tony/Projects/dual_manipulation_isaac_sim/env/urdf/camera.yaml"
 )
 DEFAULT_SCAN_CONFIG = (
-    Path(__file__).resolve().parents[1] / "config" / "multi_view_scan.yaml"
+    Path(__file__).resolve().parents[2] / "config" / "multi_view_scan.yaml"
 )
 
 

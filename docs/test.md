@@ -747,15 +747,14 @@ scene-derived visibility, per-camera intrinsics, and online path replanning.
 The publication method maps to the repository as follows:
 
 - spiral generation, projection, overlap, and optimization:
-  [`scripts/scan_trajectory.py`](../scripts/scan_trajectory.py);
+  [`scripts/multi_view_scan/scan_trajectory.py`](../scripts/multi_view_scan/scan_trajectory.py);
 - pose and look-at geometry:
-  [`scripts/aux_math.py`](../scripts/aux_math.py);
+  [`scripts/multi_view_scan/aux_math.py`](../scripts/multi_view_scan/aux_math.py);
 - collision-aware MoveIt request construction:
-  [`scripts/moveit_ik.py`](../scripts/moveit_ik.py);
+  [`scripts/multi_view_scan/moveit_ik.py`](../scripts/multi_view_scan/moveit_ik.py);
 - scan orchestration, TF visualization, capture, and manifest output:
-  [`scripts/multi_view_scan.py`](../scripts/multi_view_scan.py);
+  [`scripts/multi_view_scan/multi_view_scan.py`](../scripts/multi_view_scan/multi_view_scan.py);
 - behavioral verification:
   [`tests/test_scan_trajectory.py`](../tests/test_scan_trajectory.py);
 - concise implementation contract:
   [`TASK.md`](../TASK.md).
-

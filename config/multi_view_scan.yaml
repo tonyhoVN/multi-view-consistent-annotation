@@ -1,4 +1,4 @@
-# Parameters for scripts/multi_view_scan.py.
+# Parameters for scripts/multi_view_scan/multi_view_scan.py.
 # Command-line options override values from this file.
 multi_view_scan:
   # Candidate camera geometry in the world frame.

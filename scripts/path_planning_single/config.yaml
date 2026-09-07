@@ -45,6 +45,10 @@ single_path_planning:
   after_color_rgb: [25, 255, 0]
   line_width: 0.012
   point_size: 0.022
+  accepted_color_rgb: [255, 40, 40]
+  rejected_color_rgb: [0, 0, 0]
+  rejected_cross_size: 0.040
+  rejected_cross_line_width: 0.006
   trajectory_point_time: 0.25
   result_json: single_path_planning_result.json
   hold_seconds: 0.0

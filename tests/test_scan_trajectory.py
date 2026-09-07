@@ -16,15 +16,18 @@ import numpy as np
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from aux_math import look_at_camera_pose, transform_from_euler  # noqa: E402
-from moveit_ik import (  # noqa: E402
+from multi_view_scan.aux_math import (  # noqa: E402
+    look_at_camera_pose,
+    transform_from_euler,
+)
+from multi_view_scan.moveit_ik import (  # noqa: E402
     IKResult,
     build_camera_path,
     build_display_trajectory,
     build_trajectory_markers,
     split_trajectory_markers,
 )
-from multi_view_scan import (  # noqa: E402
+from multi_view_scan.multi_view_scan import (  # noqa: E402
     DEFAULT_SCAN_CONFIG,
     build_parser,
     filter_reachable_viewpoints,
@@ -32,7 +35,7 @@ from multi_view_scan import (  # noqa: E402
     parse_args,
     reset_generated_directories,
 )
-from scan_trajectory import (  # noqa: E402
+from multi_view_scan.scan_trajectory import (  # noqa: E402
     CameraIntrinsics,
     ReachableViewpoint,
     SpiralViewpoint,
