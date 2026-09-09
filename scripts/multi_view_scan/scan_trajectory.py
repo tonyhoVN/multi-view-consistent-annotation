@@ -149,6 +149,30 @@ def sample_scan_volume(
     return center_array + directions * radius
 
 
+def baseline_path_orders(
+    viewpoints: Sequence[ReachableViewpoint], random_seed: int
+) -> tuple[list[int], list[int]]:
+    """Return random and source-spiral orders over the same reachable poses."""
+    spiral_order = sorted(
+        range(len(viewpoints)),
+        key=lambda index: viewpoints[index].viewpoint.source_index,
+    )
+    random_order = list(spiral_order)
+    np.random.default_rng(random_seed).shuffle(random_order)
+    return random_order, spiral_order
+
+
+def overlap_violation_count(
+    order: Sequence[int], overlaps: npt.ArrayLike, minimum_overlap: float
+) -> int:
+    """Count neighboring route edges below a projected-overlap threshold."""
+    overlap_matrix = np.asarray(overlaps, dtype=np.float64)
+    return sum(
+        float(overlap_matrix[first, second]) < minimum_overlap
+        for first, second in zip(order, order[1:])
+    )
+
+
 def projection_visibility(
     camera_pose: npt.ArrayLike,
     world_points: npt.ArrayLike,

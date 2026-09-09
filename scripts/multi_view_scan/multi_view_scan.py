@@ -41,11 +41,13 @@ from multi_view_scan.scan_trajectory import (  # noqa: E402
     CameraIntrinsics,
     ReachableViewpoint,
     SpiralViewpoint,
+    baseline_path_orders,
     combined_edge_costs,
     dual_pose_distance,
     joint_distance_matrix,
     measure_path,
     nearest_neighbor_open_path,
+    overlap_violation_count,
     pairwise_overlap_matrix,
     pose_distance_matrix,
     sample_scan_volume,
@@ -60,6 +62,7 @@ DEFAULT_CAMERA_YAML = Path(
 DEFAULT_SCAN_CONFIG = (
     Path(__file__).resolve().parents[2] / "config" / "multi_view_scan.yaml"
 )
+TRAJECTORY_MODES = ("random", "spiral", "hamilton_2opt")
 
 
 def transform_record(transform: np.ndarray) -> dict[str, list[float]]:
@@ -243,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--display-trajectory-topic",
         default="/display_planned_path",
-        help="MoveIt DisplayTrajectory topic for the route after 2-opt",
+        help="MoveIt DisplayTrajectory topic for the selected capture route",
     )
     parser.add_argument(
         "--initial-display-trajectory-topic",
@@ -253,17 +256,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--left-camera-path-topic",
         default="/scan/left_camera_path",
-        help="nav_msgs/Path topic for the optimized left-camera route",
+        help="nav_msgs/Path topic for the selected left-camera route",
     )
     parser.add_argument(
         "--right-camera-path-topic",
         default="/scan/right_camera_path",
-        help="nav_msgs/Path topic for the optimized right-camera route",
+        help="nav_msgs/Path topic for the selected right-camera route",
     )
     parser.add_argument(
         "--trajectory-comparison-topic",
         default="/scan/trajectory_comparison",
-        help="MarkerArray topic containing wide before/after camera routes",
+        help="MarkerArray topic containing wide greedy/selected camera routes",
     )
     parser.add_argument(
         "--before-trajectory-marker-topic",
@@ -273,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--optimized-trajectory-marker-topic",
         default="/scan/trajectory_after_2opt",
-        help="MarkerArray topic containing only the route after 2-opt",
+        help="MarkerArray topic containing only the selected capture route",
     )
     parser.add_argument(
         "--trajectory-line-width",
@@ -295,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=3,
         default=(25, 255, 0),
         metavar=("R", "G", "B"),
-        help="RGB color for the optimized route after 2-opt",
+        help="RGB color for the selected capture route",
     )
     parser.add_argument(
         "--ik-timeout",
@@ -356,6 +359,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=30,
         help="maximum deterministic overlap-constrained 2-opt passes",
+    )
+    parser.add_argument(
+        "--trajectory-mode",
+        choices=TRAJECTORY_MODES,
+        default="hamilton_2opt",
+        help="pose order used for robot motion and RGB-D capture",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=7,
+        help="reproducible seed used when trajectory-mode=random",
     )
     parser.add_argument("--motion-timeout", type=float, default=15.0)
     parser.add_argument("--camera-timeout", type=float, default=5.0)
@@ -437,6 +452,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("pose-distance weights must be nonnegative and not both zero")
     if args.two_opt_passes < 0:
         raise ValueError("two-opt-passes must be nonnegative")
+    if isinstance(args.random_seed, bool) or not isinstance(args.random_seed, int):
+        raise ValueError("random-seed must be an integer")
     for name in ("before_trajectory_color_rgb", "optimized_trajectory_color_rgb"):
         components = getattr(args, name)
         if len(components) != 3 or any(
@@ -575,7 +592,7 @@ def optimize_viewpoint_path(
     intrinsics: CameraIntrinsics,
     args: argparse.Namespace,
 ) -> tuple[list[ReachableViewpoint], list[ReachableViewpoint], dict]:
-    """Build a constrained open TSP path and refine it with deterministic 2-opt."""
+    """Build all comparison routes and return the route selected for capture."""
     projection_points = sample_scan_volume(
         center, args.scan_volume_radius, args.projection_samples
     )
@@ -615,7 +632,10 @@ def optimize_viewpoint_path(
         motion_distances, overlaps, args.overlap_weight
     )
 
-    # Seed the open TSP greedily, then improve it without breaking overlap edges.
+    # Establish fair baselines over exactly the same IK-reachable pose set.
+    random_path, spiral_path = baseline_path_orders(reachable, args.random_seed)
+
+    # Seed the Hamiltonian path greedily, then improve it without breaking overlap.
     try:
         initial_path = nearest_neighbor_open_path(
             edge_costs,
@@ -642,11 +662,44 @@ def optimize_viewpoint_path(
     optimized_metrics = measure_path(
         optimized_path, motion_distances, overlaps, edge_costs, start_distances
     )
-    neighbor_overlaps = [
-        float(overlaps[first, second])
-        for first, second in zip(optimized_path, optimized_path[1:])
-    ]
+    random_metrics = measure_path(
+        random_path, motion_distances, overlaps, edge_costs, start_distances
+    )
+    spiral_metrics = measure_path(
+        spiral_path, motion_distances, overlaps, edge_costs, start_distances
+    )
+    route_orders = {
+        "random": random_path,
+        "spiral": spiral_path,
+        "hamilton_2opt": optimized_path,
+    }
+    route_metrics = {
+        "random": random_metrics,
+        "spiral": spiral_metrics,
+        "hamilton_2opt": optimized_metrics,
+    }
+    selected_path = route_orders[args.trajectory_mode]
+
+    # Store every route so annotation experiments can be compared and reproduced.
+    trajectories = {}
+    for mode in TRAJECTORY_MODES:
+        order = route_orders[mode]
+        trajectories[mode] = {
+            "order": [
+                reachable[index].viewpoint.source_index + 1 for index in order
+            ],
+            "metrics": asdict(route_metrics[mode]),
+            "neighbor_overlaps": [
+                float(overlaps[first, second])
+                for first, second in zip(order, order[1:])
+            ],
+            "overlap_violation_count": overlap_violation_count(
+                order, overlaps, args.minimum_neighbor_overlap
+            ),
+        }
     diagnostics = {
+        "trajectory_mode": args.trajectory_mode,
+        "random_seed": args.random_seed,
         "distance_metric": args.distance_metric,
         "pose_translation_weight": args.pose_translation_weight,
         "pose_rotation_weight": args.pose_rotation_weight,
@@ -658,11 +711,16 @@ def optimize_viewpoint_path(
         ],
         "initial_metrics": asdict(initial_metrics),
         "optimized_metrics": asdict(optimized_metrics),
-        "optimized_neighbor_overlaps": neighbor_overlaps,
+        "optimized_neighbor_overlaps": trajectories["hamilton_2opt"][
+            "neighbor_overlaps"
+        ],
+        "selected_order": trajectories[args.trajectory_mode]["order"],
+        "selected_metrics": trajectories[args.trajectory_mode]["metrics"],
+        "trajectories": trajectories,
     }
     return (
         [reachable[index] for index in initial_path],
-        [reachable[index] for index in optimized_path],
+        [reachable[index] for index in selected_path],
         diagnostics,
     )
 
@@ -728,7 +786,10 @@ def run_scan(args: argparse.Namespace) -> None:
                 "collision_aware_multi_tip_ik_filter",
                 "nearest_neighbor_open_tsp",
                 "overlap_constrained_2_opt",
+                "select_capture_trajectory",
             ],
+            "trajectory_mode": args.trajectory_mode,
+            "random_seed": args.random_seed,
             "requested_candidate_count": args.view_count,
             "azimuth_bounds_deg": list(args.azimuth_bounds),
             "elevation_bounds_deg": list(args.elevation_bounds),
@@ -746,15 +807,15 @@ def run_scan(args: argparse.Namespace) -> None:
                 "before_2opt_display_trajectory_topic": (
                     args.initial_display_trajectory_topic
                 ),
-                "after_2opt_display_trajectory_topic": args.display_trajectory_topic,
+                "selected_display_trajectory_topic": args.display_trajectory_topic,
                 "left_camera_path_topic": args.left_camera_path_topic,
                 "right_camera_path_topic": args.right_camera_path_topic,
                 "comparison_marker_topic": args.trajectory_comparison_topic,
                 "before_2opt_marker_topic": args.before_trajectory_marker_topic,
-                "after_2opt_marker_topic": args.optimized_trajectory_marker_topic,
+                "selected_marker_topic": args.optimized_trajectory_marker_topic,
                 "line_width_m": args.trajectory_line_width,
                 "before_2opt_color_rgb": list(args.before_trajectory_color_rgb),
-                "after_2opt_color_rgb": list(args.optimized_trajectory_color_rgb),
+                "selected_color_rgb": list(args.optimized_trajectory_color_rgb),
                 "point_interval_s": args.trajectory_point_time,
                 "preview_time_s": args.trajectory_preview_time,
                 "continuous_path_collision_checked": False,
@@ -865,7 +926,7 @@ def run_scan(args: argparse.Namespace) -> None:
         current_right_tcp = actual_camera_transform(
             robot, args.world_frame, args.right_tcp_frame, args.tf_timeout
         )
-        initial_viewpoints, optimized_viewpoints, path_diagnostics = (
+        initial_viewpoints, selected_viewpoints, path_diagnostics = (
             optimize_viewpoint_path(
                 reachable,
                 start_joint_values,
@@ -898,10 +959,11 @@ def run_scan(args: argparse.Namespace) -> None:
         manifest_path.write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
-        metrics = path_diagnostics["optimized_metrics"]
+        metrics = path_diagnostics["selected_metrics"]
         print(
             f"Trajectory planned: {len(reachable)}/{len(spiral_viewpoints)} "
-            f"candidates reachable, metric={args.distance_metric}, "
+            f"candidates reachable, mode={args.trajectory_mode}, "
+            f"metric={args.distance_metric}, "
             f"motion distance={metrics['motion_distance']:.3f}, "
             f"minimum overlap={metrics['minimum_neighbor_overlap']:.3f}"
         )
@@ -936,23 +998,23 @@ def run_scan(args: argparse.Namespace) -> None:
                 ],
             ]
         ]
-        optimized_left_preview_poses = [
+        selected_left_preview_poses = [
             RobotAPI.pose(*matrix_to_pose(transform))
             for transform in [
                 current_left_camera,
                 *[
                     item.viewpoint.left_camera_pose
-                    for item in optimized_viewpoints
+                    for item in selected_viewpoints
                 ],
             ]
         ]
-        optimized_right_preview_poses = [
+        selected_right_preview_poses = [
             RobotAPI.pose(*matrix_to_pose(transform))
             for transform in [
                 current_right_camera,
                 *[
                     item.viewpoint.right_camera_pose
-                    for item in optimized_viewpoints
+                    for item in selected_viewpoints
                 ],
             ]
         ]
@@ -963,13 +1025,13 @@ def run_scan(args: argparse.Namespace) -> None:
                 item.joint_values for item in initial_viewpoints
             ],
             optimized_waypoint_positions=[
-                item.joint_values for item in optimized_viewpoints
+                item.joint_values for item in selected_viewpoints
             ],
             frame_id=args.world_frame,
             before_left_camera_poses=before_left_preview_poses,
             before_right_camera_poses=before_right_preview_poses,
-            optimized_left_camera_poses=optimized_left_preview_poses,
-            optimized_right_camera_poses=optimized_right_preview_poses,
+            optimized_left_camera_poses=selected_left_preview_poses,
+            optimized_right_camera_poses=selected_right_preview_poses,
             point_interval=args.trajectory_point_time,
             line_width=args.trajectory_line_width,
             before_color_rgb=args.before_trajectory_color_rgb,
@@ -978,13 +1040,13 @@ def run_scan(args: argparse.Namespace) -> None:
         print(
             "Published RViz trajectory comparison: "
             f"before={args.initial_display_trajectory_topic}, "
-            f"after={args.display_trajectory_topic}, "
+            f"selected {args.trajectory_mode}={args.display_trajectory_topic}, "
             f"wide lines={args.trajectory_comparison_topic}, "
             f"isolated before={args.before_trajectory_marker_topic}, "
             f"isolated after={args.optimized_trajectory_marker_topic}"
         )
         animation_duration = max(
-            len(initial_viewpoints), len(optimized_viewpoints)
+            len(initial_viewpoints), len(selected_viewpoints)
         ) * args.trajectory_point_time
         preview_wait = (
             max(args.trajectory_preview_time, animation_duration)
@@ -1004,10 +1066,9 @@ def run_scan(args: argparse.Namespace) -> None:
             print(f"Waiting {preview_wait:.2f}s for the RViz preview before motion")
             time.sleep(preview_wait)
 
-        # Execute the optimized path; failures remain recorded but do not stop the scan.
-        breakpoint()
+        # Execute the selected route; failures remain recorded but do not stop the scan.
         for step_number, reachable_viewpoint in enumerate(
-            optimized_viewpoints, start=1
+            selected_viewpoints, start=1
         ):
             viewpoint = reachable_viewpoint.viewpoint
             azimuth = viewpoint.azimuth_deg
@@ -1045,18 +1106,20 @@ def run_scan(args: argparse.Namespace) -> None:
                 time.sleep(args.target_preview_time)
 
             print(
-                f"[{step_number}/{len(optimized_viewpoints)}] moving both arms: "
+                f"[{step_number}/{len(selected_viewpoints)}] moving both arms: "
                 f"spiral={viewpoint.source_index + 1:03d}, "
                 f"azimuth=+/-{azimuth:g} deg, elevation={elevation:g} deg"
             )
+
+            breakpoint()
 
             try:
                 result = robot.move_l_dual(
                     RobotAPI.pose(left_tcp_position, left_tcp_quaternion),
                     RobotAPI.pose(right_tcp_position, right_tcp_quaternion),
                     planning_group=args.planning_group,
-                    position_tolerance=0.015,
-                    orientation_tolerance=0.1,
+                    position_tolerance=0.005,
+                    orientation_tolerance=0.05,
                     tracking_timeout=args.motion_timeout + 2.0,
                     timeout=args.motion_timeout,
                 )

@@ -151,6 +151,8 @@ moving. It then:
   robot and removes any unreachable pair;
 - forms a pose- or joint-distance nearest-neighbor open-TSP path and improves
   it with 2-opt;
+- creates reproducible random, original spiral, and Hamiltonian 2-opt orders,
+  then executes the order selected by `--trajectory-mode`;
 - permits a temporal edge only when projected surface overlap meets
   `--minimum-neighbor-overlap` for both cameras;
 - publishes separate IK waypoint animations before and after 2-opt, plus wide
@@ -159,7 +161,8 @@ moving. It then:
 - sends both arm targets together with `move_l_dual`;
 - continues to the next viewpoint when a motion call raises `RobotAPIError`;
 - saves images under `scan_output/steps/step_001`, `step_002`, and so on;
-- saves IK rejections, before/after path metrics, optimized spiral order,
+- saves IK rejections, metrics and orders for all three trajectory modes,
+  the selected capture order,
   successful capture records, and relative image paths in
   `scan_output/manifest.json`;
 - attempts to return to `ready` after the scan.
@@ -182,6 +185,8 @@ python3 scripts/multi_view_scan/multi_view_scan.py \
   --pose-translation-weight 1.0 \
   --pose-rotation-weight 0.10 \
   --two-opt-passes 30 \
+  --trajectory-mode hamilton_2opt \
+  --random-seed 7 \
   --ik-timeout 0.25 \
   --trajectory-line-width 0.015 \
   --before-trajectory-color-rgb 255 0 255 \
@@ -191,6 +196,23 @@ python3 scripts/multi_view_scan/multi_view_scan.py \
   --camera-timeout 10 \
   --motion-timeout 120
 ```
+
+For three comparable annotation runs, use a separate output directory for each
+mode so cleaning one trial does not remove another trial's images:
+
+```bash
+python3 scripts/multi_view_scan/multi_view_scan.py \
+  --trajectory-mode random --random-seed 7 --output-dir scan_output_random
+python3 scripts/multi_view_scan/multi_view_scan.py \
+  --trajectory-mode spiral --output-dir scan_output_spiral
+python3 scripts/multi_view_scan/multi_view_scan.py \
+  --trajectory-mode hamilton_2opt --output-dir scan_output_hamilton_2opt
+```
+
+All modes use the same IK-reachable pose set. The random and spiral baselines
+may contain edges below `minimum_neighbor_overlap`; their violation counts are
+written to the manifest. The Hamiltonian 2-opt route enforces the threshold on
+every neighboring edge.
 
 The overlap model projects a deterministic spherical surface proxy through the
 intrinsics in `--camera-yaml`. If planning cannot connect all reachable poses
@@ -209,10 +231,11 @@ multi-tip IK joint solutions.
 
 To compare routes in RViz, add a `MarkerArray` display subscribed to
 `/scan/trajectory_comparison`. The greedy route before 2-opt is neon magenta
-`(255, 0, 255)` and the optimized route is neon green `(25, 255, 0)`; each
+`(255, 0, 255)` and the selected capture route is neon green `(25, 255, 0)`;
+each
 color contains one line strip per camera. The default line width is 0.015 m.
 On shared edges, the pre-2-opt path is rendered 1.6 times wider and translucent
-as a magenta halo, with the opaque optimized green route rendered over its
+as a magenta halo, with the opaque selected green route rendered over its
 center so neither route is hidden by coplanar overlap.
 The two routes are also published independently on
 `/scan/trajectory_before_2opt` and `/scan/trajectory_after_2opt`. Add a separate
@@ -220,7 +243,7 @@ The two routes are also published independently on
 either route without relying on the combined rendering.
 For robot animations, use two MoveIt Motion Planning displays subscribed to
 `/scan/display_trajectory_before_2opt` and `/display_planned_path`, respectively.
-The optimized camera poses also remain available as `Path` messages on
+The selected camera poses also remain available as `Path` messages on
 `/scan/left_camera_path` and `/scan/right_camera_path`. All preview publishers
 use transient-local durability. These lines and animations connect
 collision-checked IK waypoints, but the interpolated route is not itself a

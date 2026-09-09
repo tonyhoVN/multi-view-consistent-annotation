@@ -28,21 +28,27 @@ single_path_planning:
   minimum_neighbor_overlap: 0.30
   overlap_weight: 0.50
   two_opt_passes: 30
+  random_seed: 7
+  # random | spiral | hamilton_2opt | all
+  trajectory_mode: all
 
   # RViz and experiment output.
   hemisphere_topic: /single_path_planning/hemisphere
   candidate_topic: /single_path_planning/candidates
-  before_path_topic: /single_path_planning/path_before_2opt
-  after_path_topic: /single_path_planning/path_after_2opt
+  random_path_topic: /single_path_planning/path_random
+  spiral_path_topic: /single_path_planning/path_spiral
+  optimized_path_topic: /single_path_planning/path_hamilton_2opt
   comparison_topic: /single_path_planning/path_comparison
-  before_display_topic: /single_path_planning/display_before_2opt
-  after_display_topic: /single_path_planning/display_after_2opt
+  random_display_topic: /single_path_planning/display_random
+  spiral_display_topic: /single_path_planning/display_spiral
+  optimized_display_topic: /single_path_planning/display_hamilton_2opt
   hemisphere_color_rgb: [0, 180, 255]
   hemisphere_alpha: 0.16
   hemisphere_azimuth_segments: 64
   hemisphere_elevation_segments: 16
-  before_color_rgb: [255, 0, 255]
-  after_color_rgb: [25, 255, 0]
+  random_color_rgb: [255, 140, 0]
+  spiral_color_rgb: [190, 0, 255]
+  optimized_color_rgb: [25, 255, 0]
   line_width: 0.012
   point_size: 0.022
   accepted_color_rgb: [255, 40, 40]

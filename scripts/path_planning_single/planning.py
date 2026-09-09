@@ -148,3 +148,26 @@ def joint_distances(viewpoints: Sequence[ReachableViewpoint]) -> np.ndarray:
     if not np.all(np.isfinite(values)):
         raise ValueError("IK joint values must be finite")
     return np.linalg.norm(values[:, None, :] - values[None, :, :], axis=2)
+
+
+def baseline_orders(
+    viewpoints: Sequence[ReachableViewpoint], random_seed: int
+) -> tuple[list[int], list[int]]:
+    """Return reproducible random and original spiral orders over reachable views."""
+    spiral_order = sorted(
+        range(len(viewpoints)),
+        key=lambda index: viewpoints[index].viewpoint.source_index,
+    )
+    random_order = list(spiral_order)
+    np.random.default_rng(random_seed).shuffle(random_order)
+    return random_order, spiral_order
+
+
+def overlap_violation_count(
+    order: Sequence[int], overlaps: np.ndarray, minimum_overlap: float
+) -> int:
+    """Count consecutive camera pairs below the requested overlap threshold."""
+    return sum(
+        float(overlaps[first, second]) < minimum_overlap
+        for first, second in zip(order, order[1:])
+    )

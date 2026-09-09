@@ -14,17 +14,26 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from path_planning_single.planning import (  # noqa: E402
     CameraViewpoint,
     ReachableViewpoint,
+    baseline_orders,
     hemisphere_triangles,
     joint_distances,
+    overlap_violation_count,
     sample_hemisphere,
 )
 from path_planning_single.single_path_planner import (  # noqa: E402
     build_visualizations,
     load_configuration,
+    validate_configuration,
 )
 
 
 class SinglePathPlanningTests(unittest.TestCase):
+    def test_trajectory_mode_can_be_selected_from_cli(self) -> None:
+        config = load_configuration(["--trajectory-mode", "spiral"])
+
+        validate_configuration(config)
+        self.assertEqual(config.trajectory_mode, "spiral")
+
     def test_hemisphere_sampling_is_deterministic_and_looks_inward(self) -> None:
         center = np.array([0.4, 0.0, 0.2])
         first = sample_hemisphere(center, 0.5, 20, (10.0, 80.0))
@@ -58,7 +67,7 @@ class SinglePathPlanningTests(unittest.TestCase):
         ]
 
         messages = build_visualizations(
-            config, sampled, reachable, {2}, [0, 1], [1, 0], Time()
+            config, sampled, reachable, {2}, [1, 0], [0, 1], [1, 0], Time()
         )
         shell = messages["hemisphere"].markers[1]
         accepted = messages["candidates"].markers[1]
@@ -73,6 +82,45 @@ class SinglePathPlanningTests(unittest.TestCase):
         self.assertEqual(rejected.type, rejected.LINE_LIST)
         self.assertEqual((rejected.color.r, rejected.color.g, rejected.color.b), (0.0, 0.0, 0.0))
         self.assertEqual(len(rejected.points), 4)
+
+        self.assertEqual(set(messages), {
+            "hemisphere",
+            "candidates",
+            "random_path",
+            "spiral_path",
+            "optimized_path",
+            "comparison",
+        })
+        self.assertEqual(len(messages["comparison"].markers), 4)
+
+    def test_baselines_share_views_and_random_order_is_reproducible(self) -> None:
+        pose = np.eye(4)
+        source_indices = [8, 2, 5, 1]
+        reachable = [
+            ReachableViewpoint(
+                CameraViewpoint(index, 0.0, 30.0, pose), pose, np.zeros(2)
+            )
+            for index in source_indices
+        ]
+
+        first_random, spiral = baseline_orders(reachable, random_seed=17)
+        second_random, _ = baseline_orders(reachable, random_seed=17)
+
+        self.assertEqual(first_random, second_random)
+        self.assertEqual([source_indices[index] for index in spiral], [1, 2, 5, 8])
+        self.assertEqual(sorted(first_random), list(range(len(reachable))))
+
+    def test_overlap_violation_count_checks_consecutive_edges(self) -> None:
+        overlaps = np.array(
+            [
+                [1.0, 0.7, 0.2],
+                [0.7, 1.0, 0.4],
+                [0.2, 0.4, 1.0],
+            ]
+        )
+
+        self.assertEqual(overlap_violation_count([0, 1, 2], overlaps, 0.5), 1)
+        self.assertEqual(overlap_violation_count([0], overlaps, 0.5), 0)
 
     def test_single_arm_joint_distance_is_symmetric(self) -> None:
         pose = np.eye(4)

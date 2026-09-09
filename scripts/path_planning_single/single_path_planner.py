@@ -31,8 +31,10 @@ from multi_view_scan.scan_trajectory import (  # noqa: E402
 )
 from path_planning_single.planning import (  # noqa: E402
     ReachableViewpoint,
+    baseline_orders,
     hemisphere_triangles,
     joint_distances,
+    overlap_violation_count,
     pairwise_overlaps,
     sample_hemisphere,
 )
@@ -54,6 +56,7 @@ from visualization_msgs.msg import Marker, MarkerArray  # noqa: E402
 
 
 DEFAULT_CONFIG = Path(__file__).with_name("config.yaml")
+TRAJECTORY_MODES = ("random", "spiral", "hamilton_2opt", "all")
 
 
 def load_configuration(arguments: Sequence[str] | None = None) -> argparse.Namespace:
@@ -66,6 +69,8 @@ def load_configuration(arguments: Sequence[str] | None = None) -> argparse.Names
     parser.add_argument("--compute-ik-service")
     parser.add_argument("--joint-state-topic")
     parser.add_argument("--view-count", type=int)
+    parser.add_argument("--random-seed", type=int)
+    parser.add_argument("--trajectory-mode", choices=TRAJECTORY_MODES)
     parser.add_argument("--hold-seconds", type=float)
     parser.add_argument(
         "--use-sim-time", action=argparse.BooleanOptionalAction, default=None
@@ -100,6 +105,12 @@ def validate_configuration(config: argparse.Namespace) -> None:
         raise ValueError("robot group, link, frame, service, and joint topic are required")
     if config.view_count <= 1 or config.two_opt_passes < 0:
         raise ValueError("view_count must exceed one and two_opt_passes cannot be negative")
+    if isinstance(config.random_seed, bool) or not isinstance(config.random_seed, int):
+        raise ValueError("random_seed must be an integer")
+    if config.trajectory_mode not in TRAJECTORY_MODES:
+        raise ValueError(
+            f"trajectory_mode must be one of: {', '.join(TRAJECTORY_MODES)}"
+        )
     positive = (
         config.radius,
         config.service_timeout,
@@ -122,8 +133,9 @@ def validate_configuration(config: argparse.Namespace) -> None:
         "hemisphere_color_rgb",
         "accepted_color_rgb",
         "rejected_color_rgb",
-        "before_color_rgb",
-        "after_color_rgb",
+        "random_color_rgb",
+        "spiral_color_rgb",
+        "optimized_color_rgb",
     ):
         color = getattr(config, name)
         if len(color) != 3 or any(not 0 <= int(value) <= 255 for value in color):
@@ -175,20 +187,26 @@ class StandardIKClient:
             "candidates": self.node.create_publisher(
                 MarkerArray, config.candidate_topic, qos
             ),
-            "before_path": self.node.create_publisher(
-                MarkerArray, config.before_path_topic, qos
+            "random_path": self.node.create_publisher(
+                MarkerArray, config.random_path_topic, qos
             ),
-            "after_path": self.node.create_publisher(
-                MarkerArray, config.after_path_topic, qos
+            "spiral_path": self.node.create_publisher(
+                MarkerArray, config.spiral_path_topic, qos
+            ),
+            "optimized_path": self.node.create_publisher(
+                MarkerArray, config.optimized_path_topic, qos
             ),
             "comparison": self.node.create_publisher(
                 MarkerArray, config.comparison_topic, qos
             ),
-            "before_display": self.node.create_publisher(
-                DisplayTrajectory, config.before_display_topic, qos
+            "random_display": self.node.create_publisher(
+                DisplayTrajectory, config.random_display_topic, qos
             ),
-            "after_display": self.node.create_publisher(
-                DisplayTrajectory, config.after_display_topic, qos
+            "spiral_display": self.node.create_publisher(
+                DisplayTrajectory, config.spiral_display_topic, qos
+            ),
+            "optimized_display": self.node.create_publisher(
+                DisplayTrajectory, config.optimized_display_topic, qos
             ),
         }
 
@@ -304,7 +322,8 @@ def build_visualizations(
     sampled,
     reachable: Sequence[ReachableViewpoint],
     rejected_indices: set[int],
-    initial_order: Sequence[int],
+    random_order: Sequence[int],
+    spiral_order: Sequence[int],
     optimized_order: Sequence[int],
     stamp,
 ) -> dict[str, MarkerArray]:
@@ -383,31 +402,51 @@ def build_visualizations(
             ]
         )
 
-    initial_poses = [reachable[index].viewpoint.camera_pose for index in initial_order]
+    random_poses = [reachable[index].viewpoint.camera_pose for index in random_order]
+    spiral_poses = [reachable[index].viewpoint.camera_pose for index in spiral_order]
     optimized_poses = [reachable[index].viewpoint.camera_pose for index in optimized_order]
-    before = route_marker(
-        initial_poses,
+    random_route = route_marker(
+        random_poses,
         frame,
         stamp,
-        "before_2opt",
-        config.before_color_rgb,
-        config.line_width * 1.5,
-        0.60,
+        "random_sequence",
+        config.random_color_rgb,
+        config.line_width * 1.7,
+        0.45,
     )
-    after = route_marker(
+    spiral_route = route_marker(
+        spiral_poses,
+        frame,
+        stamp,
+        "normal_spiral",
+        config.spiral_color_rgb,
+        config.line_width * 1.35,
+        0.65,
+    )
+    optimized_route = route_marker(
         optimized_poses,
         frame,
         stamp,
-        "after_2opt",
-        config.after_color_rgb,
+        "hamilton_2opt",
+        config.optimized_color_rgb,
         config.line_width,
     )
     return {
         "hemisphere": MarkerArray(markers=[reset_marker(frame, stamp), shell]),
         "candidates": MarkerArray(markers=[reset_marker(frame, stamp), accepted, rejected]),
-        "before_path": MarkerArray(markers=[reset_marker(frame, stamp), before]),
-        "after_path": MarkerArray(markers=[reset_marker(frame, stamp), after]),
-        "comparison": MarkerArray(markers=[reset_marker(frame, stamp), before, after]),
+        "random_path": MarkerArray(markers=[reset_marker(frame, stamp), random_route]),
+        "spiral_path": MarkerArray(markers=[reset_marker(frame, stamp), spiral_route]),
+        "optimized_path": MarkerArray(
+            markers=[reset_marker(frame, stamp), optimized_route]
+        ),
+        "comparison": MarkerArray(
+            markers=[
+                reset_marker(frame, stamp),
+                random_route,
+                spiral_route,
+                optimized_route,
+            ]
+        ),
     }
 
 
@@ -472,7 +511,7 @@ def run(config: argparse.Namespace) -> None:
         ]
         start_values = np.asarray([current_positions[name] for name in joint_names])
 
-        # Construct the constrained greedy path and refine the complete route.
+        # Build all three routes over the exact same IK-reachable camera poses.
         surface_points = sample_scan_volume(
             center, config.scan_volume_radius, config.projection_samples
         )
@@ -482,19 +521,26 @@ def run(config: argparse.Namespace) -> None:
             [np.linalg.norm(item.joint_values - start_values) for item in reachable]
         )
         costs = combined_edge_costs(distances, overlaps, config.overlap_weight)
-        initial_order = nearest_neighbor_open_path(
+        random_order, spiral_order = baseline_orders(reachable, config.random_seed)
+        greedy_order = nearest_neighbor_open_path(
             costs, overlaps, start_distances, config.minimum_neighbor_overlap
         )
         optimized_order = two_opt_open_path(
-            initial_order,
+            greedy_order,
             costs,
             overlaps,
             start_distances,
             config.minimum_neighbor_overlap,
             config.two_opt_passes,
         )
-        initial_metrics = measure_path(
-            initial_order, distances, overlaps, costs, start_distances
+        random_metrics = measure_path(
+            random_order, distances, overlaps, costs, start_distances
+        )
+        spiral_metrics = measure_path(
+            spiral_order, distances, overlaps, costs, start_distances
+        )
+        greedy_metrics = measure_path(
+            greedy_order, distances, overlaps, costs, start_distances
         )
         optimized_metrics = measure_path(
             optimized_order, distances, overlaps, costs, start_distances
@@ -506,53 +552,130 @@ def run(config: argparse.Namespace) -> None:
             sampled,
             reachable,
             set(rejected),
-            initial_order,
+            random_order,
+            spiral_order,
             optimized_order,
             stamp,
         )
-        before_display = build_display_trajectory(
-            joint_names,
-            start_values,
-            [reachable[index].joint_values for index in initial_order],
-            config.trajectory_point_time,
-        )
-        after_display = build_display_trajectory(
-            joint_names,
-            start_values,
-            [reachable[index].joint_values for index in optimized_order],
-            config.trajectory_point_time,
-        )
-        for display in (before_display, after_display):
+        displays = {
+            name: build_display_trajectory(
+                joint_names,
+                start_values,
+                [reachable[index].joint_values for index in order],
+                config.trajectory_point_time,
+            )
+            for name, order in (
+                ("random_display", random_order),
+                ("spiral_display", spiral_order),
+                ("optimized_display", optimized_order),
+            )
+        }
+        for display in displays.values():
             display.trajectory_start.joint_state.header.stamp = stamp
             display.trajectory[0].joint_trajectory.header.stamp = stamp
+
+        # Serialize sample IDs and poses so downstream trials can replay each order.
+        def source_order(order: Sequence[int]) -> list[int]:
+            return [reachable[index].viewpoint.source_index + 1 for index in order]
+
+        def trajectory_record(order, metrics) -> dict:
+            return {
+                "order": source_order(order),
+                "metrics": asdict(metrics),
+                "overlap_violation_count": overlap_violation_count(
+                    order, overlaps, config.minimum_neighbor_overlap
+                ),
+            }
+
+        reachable_records = []
+        for item in reachable:
+            position, quaternion = matrix_to_pose(item.viewpoint.camera_pose)
+            reachable_records.append(
+                {
+                    "sample_index": item.viewpoint.source_index + 1,
+                    "azimuth_deg": item.viewpoint.azimuth_deg,
+                    "elevation_deg": item.viewpoint.elevation_deg,
+                    "camera_position_xyz": position.tolist(),
+                    "camera_quaternion_xyzw": quaternion.tolist(),
+                    "joint_positions": dict(zip(joint_names, item.joint_values.tolist())),
+                }
+            )
 
         result = {
             "configuration": str(config.config.expanduser().resolve()),
             "motion_executed": False,
+            "trajectory_mode": config.trajectory_mode,
+            "selected_trajectories": (
+                list(TRAJECTORY_MODES[:-1])
+                if config.trajectory_mode == "all"
+                else [config.trajectory_mode]
+            ),
             "planning_group": config.planning_group,
             "ik_link_name": config.ik_link_name,
             "sample_count": len(sampled),
             "reachable_count": len(reachable),
             "rejected_sample_indices": [index + 1 for index in rejected],
             "joint_names": joint_names,
-            "initial_order": [reachable[index].viewpoint.source_index + 1 for index in initial_order],
-            "optimized_order": [reachable[index].viewpoint.source_index + 1 for index in optimized_order],
-            "initial_metrics": asdict(initial_metrics),
-            "optimized_metrics": asdict(optimized_metrics),
+            "minimum_neighbor_overlap": config.minimum_neighbor_overlap,
+            "random_seed": config.random_seed,
+            "reachable_viewpoints": reachable_records,
+            "trajectories": {
+                "random": trajectory_record(random_order, random_metrics),
+                "spiral": trajectory_record(spiral_order, spiral_metrics),
+                "hamilton_2opt": trajectory_record(
+                    optimized_order, optimized_metrics
+                ),
+            },
+            "optimizer": {
+                "nearest_neighbor_seed_order": source_order(greedy_order),
+                "nearest_neighbor_seed_metrics": asdict(greedy_metrics),
+            },
         }
         result_path = Path(config.result_json).expanduser().resolve()
         result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
-        # Publish once with transient durability, then republish markers while held.
-        for name, message in markers.items():
-            client.publishers[name].publish(message)
-        client.publishers["before_display"].publish(before_display)
-        client.publishers["after_display"].publish(after_display)
-        print(
-            f"Planned {len(reachable)}/{len(sampled)} reachable views; "
-            f"objective {initial_metrics.objective:.4f} -> "
-            f"{optimized_metrics.objective:.4f}"
-        )
+        # Select one experimental route or publish the complete paper comparison.
+        route_keys = {
+            "random": ("random_path", "random_display"),
+            "spiral": ("spiral_path", "spiral_display"),
+            "hamilton_2opt": ("optimized_path", "optimized_display"),
+        }
+        if config.trajectory_mode == "all":
+            marker_names = [
+                "hemisphere",
+                "candidates",
+                "random_path",
+                "spiral_path",
+                "optimized_path",
+                "comparison",
+            ]
+            display_names = list(displays)
+        else:
+            path_name, display_name = route_keys[config.trajectory_mode]
+            marker_names = ["hemisphere", "candidates", path_name]
+            display_names = [display_name]
+
+        # Publish once with transient durability, then refresh markers while held.
+        for name in marker_names:
+            client.publishers[name].publish(markers[name])
+        for name in display_names:
+            client.publishers[name].publish(displays[name])
+        print(f"Trajectory mode: {config.trajectory_mode}")
+        print(f"Planned {len(reachable)}/{len(sampled)} reachable views:")
+        for label, order, metrics in (
+            ("random", random_order, random_metrics),
+            ("spiral", spiral_order, spiral_metrics),
+            ("Hamiltonian + 2-opt", optimized_order, optimized_metrics),
+        ):
+            violations = overlap_violation_count(
+                order, overlaps, config.minimum_neighbor_overlap
+            )
+            print(
+                f"  {label}: objective={metrics.objective:.4f}, "
+                f"motion={metrics.motion_distance:.4f}, "
+                f"mean overlap={metrics.mean_neighbor_overlap:.3f}, "
+                f"overlap violations={violations}"
+            )
         print(f"Results: {result_path}")
         print("No motion was planned or executed. Press Ctrl-C to stop publishing.")
         deadline = (
@@ -562,8 +685,8 @@ def run(config: argparse.Namespace) -> None:
         while rclpy.ok() and (deadline is None or time.monotonic() < deadline):
             rclpy.spin_once(client.node, timeout_sec=0.1)
             if time.monotonic() >= next_publish:
-                for name, message in markers.items():
-                    client.publishers[name].publish(message)
+                for name in marker_names:
+                    client.publishers[name].publish(markers[name])
                 next_publish = time.monotonic() + 1.0
     except KeyboardInterrupt:
         pass

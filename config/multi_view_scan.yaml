@@ -31,7 +31,7 @@ multi_view_scan:
   planning_group: dual_arm
   ik_service: /compute_ik
   joint_state_topic: /joint_states
-  ik_timeout: 0.25
+  ik_timeout: 0.05
   joint_state_timeout: 2.0
 
   # Complete trajectory visualization in RViz.
@@ -46,7 +46,7 @@ multi_view_scan:
   before_trajectory_color_rgb: [255, 0, 255]
   optimized_trajectory_color_rgb: [25, 255, 0]
   trajectory_point_time: 0.25
-  trajectory_preview_time: 5.0
+  trajectory_preview_time: 1.0
   target_preview_time: 1.0
 
   # Projection-overlap and open-TSP optimization.
@@ -58,6 +58,8 @@ multi_view_scan:
   pose_translation_weight: 1.0     # scales combined TCP translation
   pose_rotation_weight: 0.0       # meters per radian of TCP rotation
   two_opt_passes: 30
+  trajectory_mode: hamilton_2opt   # random, spiral, or hamilton_2opt
+  random_seed: 7                   # used only for the random trajectory
 
   # Runtime timeouts and capture timing, in seconds.
   motion_timeout: 15.0

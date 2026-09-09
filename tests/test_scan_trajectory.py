@@ -32,6 +32,7 @@ from multi_view_scan.multi_view_scan import (  # noqa: E402
     build_parser,
     filter_reachable_viewpoints,
     load_scan_config,
+    optimize_viewpoint_path,
     parse_args,
     reset_generated_directories,
 )
@@ -39,7 +40,9 @@ from multi_view_scan.scan_trajectory import (  # noqa: E402
     CameraIntrinsics,
     ReachableViewpoint,
     SpiralViewpoint,
+    baseline_path_orders,
     dual_pose_distance,
+    overlap_violation_count,
     path_has_minimum_overlap,
     pose_distance_matrix,
     projected_overlap,
@@ -93,6 +96,77 @@ class SpiralAndProjectionTests(unittest.TestCase):
 
 
 class PathOptimizationTests(unittest.TestCase):
+    def test_spiral_mode_selects_source_order_for_execution(self) -> None:
+        pose = np.eye(4)
+        reachable = [
+            ReachableViewpoint(
+                SpiralViewpoint(index, 0.0, 45.0, pose, pose),
+                pose,
+                pose,
+                np.array([float(position)]),
+            )
+            for position, index in enumerate((3, 0, 2, 1))
+        ]
+        args = argparse.Namespace(
+            scan_volume_radius=0.1,
+            projection_samples=64,
+            distance_metric="joint",
+            pose_translation_weight=1.0,
+            pose_rotation_weight=0.0,
+            overlap_weight=0.5,
+            minimum_neighbor_overlap=0.0,
+            two_opt_passes=2,
+            random_seed=9,
+            trajectory_mode="spiral",
+        )
+
+        _, selected, diagnostics = optimize_viewpoint_path(
+            reachable,
+            np.zeros(1),
+            pose,
+            pose,
+            np.zeros(3),
+            CameraIntrinsics(640, 480, 600.0, 600.0, 320.0, 240.0),
+            args,
+        )
+
+        self.assertEqual(
+            [item.viewpoint.source_index for item in selected], [0, 1, 2, 3]
+        )
+        self.assertEqual(diagnostics["trajectory_mode"], "spiral")
+        self.assertEqual(set(diagnostics["trajectories"]), {
+            "random", "spiral", "hamilton_2opt"
+        })
+
+    def test_random_and_spiral_baselines_use_same_reachable_set(self) -> None:
+        pose = np.eye(4)
+        reachable = [
+            ReachableViewpoint(
+                SpiralViewpoint(index, 0.0, 45.0, pose, pose),
+                pose,
+                pose,
+                np.zeros(2),
+            )
+            for index in (6, 1, 4, 2)
+        ]
+
+        random_first, spiral = baseline_path_orders(reachable, 19)
+        random_second, _ = baseline_path_orders(reachable, 19)
+
+        self.assertEqual(random_first, random_second)
+        self.assertEqual(sorted(random_first), list(range(4)))
+        self.assertEqual(
+            [reachable[index].viewpoint.source_index for index in spiral],
+            [1, 2, 4, 6],
+        )
+
+    def test_overlap_violations_are_counted_for_baselines(self) -> None:
+        overlaps = np.array(
+            [[1.0, 0.8, 0.2], [0.8, 1.0, 0.4], [0.2, 0.4, 1.0]]
+        )
+
+        self.assertEqual(overlap_violation_count([0, 1, 2], overlaps, 0.5), 1)
+
     def test_dual_pose_distance_combines_translation_and_rotation(self) -> None:
         identity = np.eye(4)
         translated_left = np.eye(4)
@@ -222,6 +296,8 @@ class ScanIntegrationHelperTests(unittest.TestCase):
         self.assertEqual(set(configured), expected)
         defaults = parse_args([])
         self.assertEqual(defaults.distance_metric, "pose")
+        self.assertEqual(defaults.trajectory_mode, "hamilton_2opt")
+        self.assertEqual(defaults.random_seed, 7)
         self.assertEqual(defaults.before_trajectory_color_rgb, [255, 0, 255])
         self.assertEqual(defaults.optimized_trajectory_color_rgb, [25, 255, 0])
 
@@ -237,11 +313,19 @@ class ScanIntegrationHelperTests(unittest.TestCase):
             )
 
             args = parse_args(
-                ["--config", str(config_path), "--view-count", "20"]
+                [
+                    "--config",
+                    str(config_path),
+                    "--view-count",
+                    "20",
+                    "--trajectory-mode",
+                    "random",
+                ]
             )
 
         self.assertEqual(args.config, config_path)
         self.assertEqual(args.view_count, 20)
+        self.assertEqual(args.trajectory_mode, "random")
         self.assertFalse(args.use_sim_time)
         self.assertEqual(args.output_dir, Path("yaml_output"))
 
