@@ -4,7 +4,7 @@ This experiment compares annotation data collected from three traversal orders
 over the same sampled and IK-reachable camera poses:
 
 1. `random`: a reproducible random permutation.
-2. `spiral`: the original golden-angle hemisphere sample order.
+2. `spiral`: the original layer-major latitude/azimuth sample order.
 3. `hamilton_2opt`: an overlap-constrained nearest-neighbor Hamiltonian seed
    refined by 2-opt.
 
@@ -44,6 +44,42 @@ them in the loaded SRDF. Use `--no-use-sim-time` when the MoveIt graph uses wall
 time. The script waits indefinitely for RViz by default; use
 `--hold-seconds 20` for a finite run. Override `--random-seed 23` to create a
 different reproducible random baseline.
+
+The hemisphere uses `latitude_layers: L` elevations and
+`azimuth_samples: K` uniformly spaced azimuths per elevation, producing
+`L*K` candidate camera poses. Override these values with
+`--latitude-layers L` and `--azimuth-samples K`.
+
+With elevation measured upward from the world horizontal plane, the sampler
+uses
+
+```text
+theta_l = theta_min + l (theta_max - theta_min)/(L - 1)
+phi_k   = phi_offset + 2 pi k/K
+p_lk    = p_c + rho [cos(theta_l) cos(phi_k),
+                     cos(theta_l) sin(phi_k),
+                     sin(theta_l)]^T.
+```
+
+The camera rotation is `[x y z]`, where `z` is the normalized direction from
+`p_lk` to `p_c`, `x` is the normalized `z × z_world`, and `y = z × x`.
+
+Path initialization is controlled by `path_start_mode`:
+
+- `initial_pose` starts at the accepted viewpoint nearest the measured initial
+  robot state and prevents 2-opt from replacing that first viewpoint.
+- `all_accepted` tries every IK-accepted viewpoint as the greedy start and
+  selects the lowest-cost complete path. This is the default and preserves the
+  previous behavior.
+
+Override it with `--path-start-mode initial_pose` or
+`--path-start-mode all_accepted`.
+
+If nearest-neighbor reaches a dead end for every permitted start, the planner
+falls back to a deterministic, connectivity-pruned Hamiltonian search. Thus a
+greedy failure no longer rejects an overlap-feasible route. A failure after the
+fallback means either that no Hamiltonian path satisfies the overlap threshold
+or that the bounded search limit was reached.
 
 Select one trajectory for an individual experiment:
 
@@ -96,3 +132,67 @@ overlap threshold. Random and spiral are intentionally retained as baselines
 even if they violate that threshold; the Hamiltonian 2-opt route is constrained
 by it. Use the recorded `sample_index` values to associate images and annotation
 metrics with the same physical viewpoints in every trial.
+
+## Kinova scan execution
+
+`single_view_scan.py` extends the no-motion planner with Kinova motion and
+capture. Its defaults are in the `single_view_scan` section of `config.yaml`:
+
+```yaml
+planning_group: manipulator
+ik_link_name: end_effector_link
+end_effector_name: end_effector_link
+ready_state: Ready
+base_frame: base_link
+output_suffix: hamilton_2opt
+trajectory_mode: hamilton_2opt
+```
+
+Confirm the camera frame, segmentation camera frame, and RGB-D topics against
+the active Kinova/Isaac configuration, then run:
+
+```bash
+python3 scripts/path_planning_single/single_view_scan.py \
+  --output-suffix trial_01 \
+  --trajectory-mode hamilton_2opt
+```
+
+Available motion orders are `random`, `spiral`, and `hamilton_2opt`. For a
+reproducible random trial, also pass `--random-seed N`. The first physical
+command moves the `manipulator` group to SRDF state `Ready`. Planning then uses
+that joint state and the live `camera_frame -> end_effector_link` TF calibration.
+Each retained camera pose is converted into an end-effector target and sent
+with `move_cartesian` for `end_effector_link`. A failed Cartesian motion is
+recorded and skipped.
+
+`camera_frame` controls motion conversion and the saved `T_base_cam_i.npy`
+transform. `segmentation_camera_frame` is independent and is passed only to
+Isaac's segmentation service. The default Kinova simulation configuration uses
+`camera_color_frame` for motion/TF and
+`handeye_camera_color_optical_frame` for segmentation.
+
+Index `0` is always captured at the initial `Ready` pose before any Cartesian
+scan motion. Hemisphere sampling indices begin at `1`. The initial index is
+also prepended to every recorded route and to the RViz route markers; route
+optimization still operates only on the IK-accepted hemisphere samples.
+
+For view index `i`, successful captures are:
+
+```text
+scan_output/
+├── save_images_trial_01/color_i.png
+├── save_images_trial_01/depth_i.png
+├── save_segment_trial_01/segment_i/<camera-frame>/capture_000000/
+│   ├── manifest.json
+│   └── <visible-object>.png
+└── save_TF_trial_01/T_base_cam_i.npy
+```
+
+The NumPy matrix is the measured $T_{base\_link}^{camera}$ TF after motion and
+settling. Pass `--no-save-segmentation` when the Isaac segmentation service is
+not being used. The suffix-specific `manifest_<suffix>.json` records rejected
+IK samples, every route, motion failures, and all saved paths.
+
+At startup, an existing `save_images_<suffix>`, `save_segment_<suffix>`,
+`save_TF_<suffix>`, and `manifest_<suffix>.json` are removed before new data is
+written. Other suffixes and unrelated files under `scan_output` are preserved.

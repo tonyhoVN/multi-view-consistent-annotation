@@ -35,47 +35,51 @@ class ReachableViewpoint:
 def sample_hemisphere(
     center: npt.ArrayLike,
     radius: float,
-    count: int,
+    latitude_layers: int,
+    azimuth_samples: int,
     elevation_bounds_deg: Sequence[float],
     azimuth_offset_deg: float = 0.0,
 ) -> list[CameraViewpoint]:
-    """Generate deterministic equal-area golden-angle poses on an upper hemisphere."""
+    """Generate a deterministic latitude-azimuth grid on an upper hemisphere."""
     center_array = np.asarray(center, dtype=np.float64).reshape(3)
     if not np.all(np.isfinite(center_array)):
         raise ValueError("hemisphere center must be finite")
-    if not math.isfinite(radius) or radius <= 0.0 or count <= 0:
-        raise ValueError("radius and viewpoint count must be positive")
+    if not math.isfinite(radius) or radius <= 0.0:
+        raise ValueError("radius must be positive")
+    if latitude_layers < 1 or azimuth_samples < 3:
+        raise ValueError(
+            "latitude_layers must be positive and azimuth_samples at least 3"
+        )
     if len(elevation_bounds_deg) != 2:
         raise ValueError("elevation bounds require MIN and MAX")
     elevation_min, elevation_max = map(float, elevation_bounds_deg)
     if not 0.0 <= elevation_min < elevation_max <= 90.0:
         raise ValueError("elevation bounds must satisfy 0 <= MIN < MAX <= 90")
 
-    # Uniform spacing in sin(elevation) produces equal-area surface samples.
-    sine_min = math.sin(math.radians(elevation_min))
-    sine_max = math.sin(math.radians(elevation_max))
-    golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+    elevations = np.linspace(elevation_min, elevation_max, latitude_layers)
+    azimuth_offset = math.radians(azimuth_offset_deg)
     viewpoints = []
-    for index in range(count):
-        fraction = (index + 0.5) / count
-        elevation = math.asin(sine_min + fraction * (sine_max - sine_min))
-        azimuth = math.radians(azimuth_offset_deg) + index * golden_angle
-        direction = np.array(
-            [
-                math.cos(elevation) * math.cos(azimuth),
-                math.cos(elevation) * math.sin(azimuth),
-                math.sin(elevation),
-            ]
-        )
-        position = center_array + radius * direction
-        viewpoints.append(
-            CameraViewpoint(
-                source_index=index,
-                azimuth_deg=math.degrees(azimuth) % 360.0,
-                elevation_deg=math.degrees(elevation),
-                camera_pose=look_at_camera_pose(position, center_array),
+    for layer_index, elevation_deg in enumerate(elevations):
+        elevation = math.radians(float(elevation_deg))
+        for azimuth_index in range(azimuth_samples):
+            azimuth = azimuth_offset + 2.0 * math.pi * azimuth_index / azimuth_samples
+            direction = np.array(
+                [
+                    math.cos(elevation) * math.cos(azimuth),
+                    math.cos(elevation) * math.sin(azimuth),
+                    math.sin(elevation),
+                ]
             )
-        )
+            position = center_array + radius * direction
+            source_index = layer_index * azimuth_samples + azimuth_index
+            viewpoints.append(
+                CameraViewpoint(
+                    source_index=source_index,
+                    azimuth_deg=math.degrees(azimuth) % 360.0,
+                    elevation_deg=float(elevation_deg),
+                    camera_pose=look_at_camera_pose(position, center_array),
+                )
+            )
     return viewpoints
 
 

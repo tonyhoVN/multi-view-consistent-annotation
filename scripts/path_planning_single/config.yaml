@@ -12,21 +12,25 @@ single_path_planning:
   ik_timeout: 0.25
 
   # Camera sampling and camera-to-IK-link calibration.
-  center: [0.45, 0.0, 0.20]
-  radius: 0.40
-  view_count: 40
-  elevation_bounds: [15.0, 80.0]
+  center: [0.45, 0.0, 0.1]
+  radius: 0.3
+  # L latitude layers and K uniformly spaced azimuths produce L*K poses.
+  latitude_layers: 5
+  azimuth_samples: 8
+  # initial_pose anchors the nearest first view; all_accepted searches every start.
+  path_start_mode: initial_pose
+  elevation_bounds: [30.0, 80.0]
   azimuth_offset_deg: 0.0
   camera_to_ik_link_xyz: [0.0, 0.0, 0.0]
   camera_to_ik_link_rpy_deg: [0.0, 0.0, 0.0]
   excluded_joint_substrings: [finger, gripper]
 
   # Projection-overlap path objective.
-  camera_yaml: /home/hier-tony/Projects/dual_manipulation_isaac_sim/env/urdf/camera.yaml
+  camera_yaml: /home/hier-tony/Projects/kinova_isaacsim/env/urdf/camera.yaml
   scan_volume_radius: 0.15
   projection_samples: 2048
   minimum_neighbor_overlap: 0.30
-  overlap_weight: 0.50
+  overlap_weight: 5.0
   two_opt_passes: 30
   random_seed: 7
   # random | spiral | hamilton_2opt | all
@@ -58,3 +62,33 @@ single_path_planning:
   trajectory_point_time: 0.25
   result_json: single_path_planning_result.json
   hold_seconds: 0.0
+
+single_view_scan:
+  # Kinova motion interface and hand-eye sensor.
+  planning_group: manipulator
+  ik_link_name: end_effector_link
+  end_effector_name: end_effector_link
+  ready_state: Ready
+  base_frame: base_link
+  # Motion conversion and saved T_base_cam use the physical camera link.
+  camera_frame: camera_color_frame
+  # Isaac's segmentation service expects the rendered optical frame name.
+  segmentation_camera_frame: handeye_camera_color_optical_frame
+  rgb_topic: /handeye/color/image_raw/compressed
+  depth_topic: /handeye/aligned_depth_to_color/image_raw
+
+  # One suffix keeps the image, segmentation, and TF trials paired.
+  output_dir: scan_output
+  output_suffix: run2
+  trajectory_mode: hamilton_2opt
+  save_segmentation: true
+  segmentation_service: /save_object_segmentations
+
+  # Motion, sensor, TF, and Isaac service timing in seconds.
+  motion_timeout: 30.0
+  camera_timeout: 5.0
+  tf_timeout: 2.0
+  segmentation_timeout: 35.0
+  settle_time: 1.0
+  target_preview_time: 0.5
+  trajectory_preview_time: 1.0

@@ -29,6 +29,9 @@ multi_view_scan:
 
   # MoveIt planning and collision-aware multi-tip IK.
   planning_group: dual_arm
+  robot_mode: simulation            # simulation or real
+  segmentation_service: /save_object_segmentations
+  segmentation_timeout: 35.0
   ik_service: /compute_ik
   joint_state_topic: /joint_states
   ik_timeout: 0.05

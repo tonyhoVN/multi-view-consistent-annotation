@@ -68,7 +68,11 @@ def load_configuration(arguments: Sequence[str] | None = None) -> argparse.Names
     parser.add_argument("--world-frame")
     parser.add_argument("--compute-ik-service")
     parser.add_argument("--joint-state-topic")
-    parser.add_argument("--view-count", type=int)
+    parser.add_argument("--latitude-layers", type=int)
+    parser.add_argument("--azimuth-samples", type=int)
+    parser.add_argument(
+        "--path-start-mode", choices=("initial_pose", "all_accepted")
+    )
     parser.add_argument("--random-seed", type=int)
     parser.add_argument("--trajectory-mode", choices=TRAJECTORY_MODES)
     parser.add_argument("--hold-seconds", type=float)
@@ -103,14 +107,20 @@ def validate_configuration(config: argparse.Namespace) -> None:
     )
     if not all(getattr(config, name) for name in required_names):
         raise ValueError("robot group, link, frame, service, and joint topic are required")
-    if config.view_count <= 1 or config.two_opt_passes < 0:
-        raise ValueError("view_count must exceed one and two_opt_passes cannot be negative")
+    if config.latitude_layers < 1 or config.azimuth_samples < 3:
+        raise ValueError(
+            "latitude_layers must be positive and azimuth_samples at least 3"
+        )
+    if config.two_opt_passes < 0:
+        raise ValueError("two_opt_passes cannot be negative")
     if isinstance(config.random_seed, bool) or not isinstance(config.random_seed, int):
         raise ValueError("random_seed must be an integer")
     if config.trajectory_mode not in TRAJECTORY_MODES:
         raise ValueError(
             f"trajectory_mode must be one of: {', '.join(TRAJECTORY_MODES)}"
         )
+    if config.path_start_mode not in {"initial_pose", "all_accepted"}:
+        raise ValueError("path_start_mode must be 'initial_pose' or 'all_accepted'")
     positive = (
         config.radius,
         config.service_timeout,
@@ -326,6 +336,7 @@ def build_visualizations(
     spiral_order: Sequence[int],
     optimized_order: Sequence[int],
     stamp,
+    initial_camera_pose: np.ndarray | None = None,
 ) -> dict[str, MarkerArray]:
     """Build the hemisphere, candidate points, and three route marker arrays."""
     frame = config.world_frame
@@ -402,9 +413,16 @@ def build_visualizations(
             ]
         )
 
-    random_poses = [reachable[index].viewpoint.camera_pose for index in random_order]
-    spiral_poses = [reachable[index].viewpoint.camera_pose for index in spiral_order]
-    optimized_poses = [reachable[index].viewpoint.camera_pose for index in optimized_order]
+    route_prefix = [] if initial_camera_pose is None else [initial_camera_pose]
+    random_poses = route_prefix + [
+        reachable[index].viewpoint.camera_pose for index in random_order
+    ]
+    spiral_poses = route_prefix + [
+        reachable[index].viewpoint.camera_pose for index in spiral_order
+    ]
+    optimized_poses = route_prefix + [
+        reachable[index].viewpoint.camera_pose for index in optimized_order
+    ]
     random_route = route_marker(
         random_poses,
         frame,
@@ -458,7 +476,8 @@ def run(config: argparse.Namespace) -> None:
     sampled = sample_hemisphere(
         center,
         config.radius,
-        config.view_count,
+        config.latitude_layers,
+        config.azimuth_samples,
         config.elevation_bounds,
         config.azimuth_offset_deg,
     )
@@ -523,7 +542,11 @@ def run(config: argparse.Namespace) -> None:
         costs = combined_edge_costs(distances, overlaps, config.overlap_weight)
         random_order, spiral_order = baseline_orders(reachable, config.random_seed)
         greedy_order = nearest_neighbor_open_path(
-            costs, overlaps, start_distances, config.minimum_neighbor_overlap
+            costs,
+            overlaps,
+            start_distances,
+            config.minimum_neighbor_overlap,
+            config.path_start_mode,
         )
         optimized_order = two_opt_open_path(
             greedy_order,
@@ -532,6 +555,7 @@ def run(config: argparse.Namespace) -> None:
             start_distances,
             config.minimum_neighbor_overlap,
             config.two_opt_passes,
+            lock_first=config.path_start_mode == "initial_pose",
         )
         random_metrics = measure_path(
             random_order, distances, overlaps, costs, start_distances
@@ -612,6 +636,9 @@ def run(config: argparse.Namespace) -> None:
             ),
             "planning_group": config.planning_group,
             "ik_link_name": config.ik_link_name,
+            "path_start_mode": config.path_start_mode,
+            "latitude_layers": config.latitude_layers,
+            "azimuth_samples": config.azimuth_samples,
             "sample_count": len(sampled),
             "reachable_count": len(reachable),
             "rejected_sample_indices": [index + 1 for index in rejected],

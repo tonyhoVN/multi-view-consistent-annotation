@@ -35,6 +35,7 @@ from multi_view_scan.multi_view_scan import (  # noqa: E402
     optimize_viewpoint_path,
     parse_args,
     reset_generated_directories,
+    save_simulation_segmentations,
 )
 from multi_view_scan.scan_trajectory import (  # noqa: E402
     CameraIntrinsics,
@@ -225,6 +226,67 @@ class PathOptimizationTests(unittest.TestCase):
         self.assertEqual(path, [2, 1, 0])
         self.assertEqual(sorted(path), [0, 1, 2])
 
+    def test_nearest_neighbor_can_anchor_at_initial_nearest_view(self) -> None:
+        costs = np.array(
+            [
+                [0.0, 1.0, 2.0],
+                [1.0, 0.0, 100.0],
+                [2.0, 100.0, 0.0],
+            ]
+        )
+        overlaps = np.ones((3, 3))
+        starts = np.array([0.0, 10.0, 10.0])
+
+        anchored = nearest_neighbor_open_path(
+            costs, overlaps, starts, 0.5, "initial_pose"
+        )
+        searched = nearest_neighbor_open_path(
+            costs, overlaps, starts, 0.5, "all_accepted"
+        )
+
+        self.assertEqual(anchored, [0, 1, 2])
+        self.assertEqual(searched, [1, 0, 2])
+
+    def test_backtracking_recovers_when_every_greedy_start_dead_ends(self) -> None:
+        costs = np.full((5, 5), 99.0)
+        np.fill_diagonal(costs, 0.0)
+        overlaps = np.eye(5)
+        weighted_edges = {
+            (0, 2): 9.0,
+            (0, 3): 9.0,
+            (1, 2): 2.0,
+            (2, 3): 4.0,
+            (2, 4): 9.0,
+            (3, 4): 8.0,
+        }
+        for (first, second), cost in weighted_edges.items():
+            costs[first, second] = costs[second, first] = cost
+            overlaps[first, second] = overlaps[second, first] = 1.0
+
+        path = nearest_neighbor_open_path(
+            costs, overlaps, np.zeros(5), 0.5, "all_accepted"
+        )
+
+        self.assertEqual(sorted(path), list(range(5)))
+        self.assertTrue(path_has_minimum_overlap(path, overlaps, 0.5))
+
+    def test_two_opt_can_keep_the_first_view_fixed(self) -> None:
+        costs = np.array(
+            [
+                [0.0, 10.0, 1.0],
+                [10.0, 0.0, 1.0],
+                [1.0, 1.0, 0.0],
+            ]
+        )
+        overlaps = np.ones((3, 3))
+        initial = [0, 1, 2]
+
+        optimized = two_opt_open_path(
+            initial, costs, overlaps, np.zeros(3), 0.5, 10, lock_first=True
+        )
+
+        self.assertEqual(optimized[0], 0)
+
     def test_nearest_neighbor_rejects_disconnected_overlap_graph(self) -> None:
         costs = np.ones((3, 3)) - np.eye(3)
         overlaps = np.eye(3)
@@ -283,6 +345,15 @@ class _FakeIKClient:
         )
 
 
+class _FakeSegmentationClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def save(self, directory: Path, camera_frame: str, _timeout: float) -> Path:
+        self.calls.append((directory, camera_frame))
+        return directory / camera_frame / "capture_000000"
+
+
 class ScanIntegrationHelperTests(unittest.TestCase):
     def test_default_yaml_contains_every_scan_parameter(self) -> None:
         parser = build_parser()
@@ -298,6 +369,7 @@ class ScanIntegrationHelperTests(unittest.TestCase):
         self.assertEqual(defaults.distance_metric, "pose")
         self.assertEqual(defaults.trajectory_mode, "hamilton_2opt")
         self.assertEqual(defaults.random_seed, 7)
+        self.assertEqual(defaults.robot_mode, "simulation")
         self.assertEqual(defaults.before_trajectory_color_rgb, [255, 0, 255])
         self.assertEqual(defaults.optimized_trajectory_color_rgb, [25, 255, 0])
 
@@ -328,6 +400,26 @@ class ScanIntegrationHelperTests(unittest.TestCase):
         self.assertEqual(args.trajectory_mode, "random")
         self.assertFalse(args.use_sim_time)
         self.assertEqual(args.output_dir, Path("yaml_output"))
+
+    def test_simulation_segmentation_records_both_camera_outputs(self) -> None:
+        client = _FakeSegmentationClient()
+        output_directory = Path("/tmp/scan_output")
+        step_directory = output_directory / "steps" / "step_001"
+
+        records = save_simulation_segmentations(
+            client,
+            step_directory,
+            output_directory,
+            {"left": "left_camera", "right": "right_camera"},
+            35.0,
+        )
+
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(records["left"]["status"], "saved")
+        self.assertEqual(
+            records["right"]["manifest"],
+            "steps/step_001/right_camera/capture_000000/manifest.json",
+        )
 
     def test_rviz_preview_contains_start_waypoints_and_camera_path(self) -> None:
         display = build_display_trajectory(

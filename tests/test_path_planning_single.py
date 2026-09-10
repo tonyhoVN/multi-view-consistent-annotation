@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -25,9 +26,71 @@ from path_planning_single.single_path_planner import (  # noqa: E402
     load_configuration,
     validate_configuration,
 )
+from path_planning_single.single_view_scan import (  # noqa: E402
+    clear_previous_manifest,
+    load_scan_configuration,
+    output_directories,
+    save_segmentation,
+    validate_scan_configuration,
+)
 
 
 class SinglePathPlanningTests(unittest.TestCase):
+    def test_kinova_scan_configuration_and_suffix_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_root = Path(temporary_directory)
+            config = load_scan_configuration(
+                [
+                    "--output-dir",
+                    str(output_root),
+                    "--output-suffix",
+                    "spiral_1",
+                ]
+            )
+
+            validate_scan_configuration(config)
+            directories = output_directories(config)
+
+            self.assertEqual(config.planning_group, "manipulator")
+            self.assertEqual(config.ready_state, "Ready")
+            self.assertEqual(config.camera_frame, "camera_color_frame")
+            self.assertEqual(
+                config.segmentation_camera_frame,
+                "handeye_camera_color_optical_frame",
+            )
+            self.assertGreaterEqual(config.trajectory_preview_time, 0.0)
+            self.assertEqual(
+                directories["images"], output_root / "save_images_spiral_1"
+            )
+            self.assertEqual(
+                directories["segments"], output_root / "save_segment_spiral_1"
+            )
+            self.assertEqual(
+                directories["transforms"], output_root / "save_TF_spiral_1"
+            )
+
+            # Reusing the suffix removes stale products from all three folders.
+            stale_file = directories["images"] / "color_9.png"
+            stale_file.write_bytes(b"stale")
+            recreated = output_directories(config)
+            self.assertFalse((recreated["images"] / "color_9.png").exists())
+
+            manifest = output_root / "manifest_spiral_1.json"
+            manifest.write_text("stale", encoding="utf-8")
+            clear_previous_manifest(manifest)
+            self.assertFalse(manifest.exists())
+
+    def test_disabled_segmentation_does_not_require_a_service(self) -> None:
+        record = save_segmentation(
+            None,
+            Path("/tmp/segment_2"),
+            "camera_frame",
+            35.0,
+            Path("/tmp"),
+        )
+
+        self.assertEqual(record, {"status": "disabled"})
+
     def test_trajectory_mode_can_be_selected_from_cli(self) -> None:
         config = load_configuration(["--trajectory-mode", "spiral"])
 
@@ -36,8 +99,8 @@ class SinglePathPlanningTests(unittest.TestCase):
 
     def test_hemisphere_sampling_is_deterministic_and_looks_inward(self) -> None:
         center = np.array([0.4, 0.0, 0.2])
-        first = sample_hemisphere(center, 0.5, 20, (10.0, 80.0))
-        second = sample_hemisphere(center, 0.5, 20, (10.0, 80.0))
+        first = sample_hemisphere(center, 0.5, 4, 5, (10.0, 80.0))
+        second = sample_hemisphere(center, 0.5, 4, 5, (10.0, 80.0))
 
         self.assertEqual(len(first), 20)
         for left, right in zip(first, second):
@@ -48,6 +111,13 @@ class SinglePathPlanningTests(unittest.TestCase):
             np.testing.assert_allclose(
                 left.camera_pose[:3, 2], -offset / np.linalg.norm(offset)
             )
+
+        # Every latitude contains K uniformly spaced azimuth samples.
+        self.assertEqual([point.elevation_deg for point in first[:5]], [10.0] * 5)
+        np.testing.assert_allclose(
+            [point.azimuth_deg for point in first[:5]],
+            [0.0, 72.0, 144.0, 216.0, 288.0],
+        )
 
     def test_transparent_shell_geometry_has_two_triangles_per_cell(self) -> None:
         triangles = hemisphere_triangles(
@@ -60,7 +130,7 @@ class SinglePathPlanningTests(unittest.TestCase):
 
     def test_hemisphere_marker_has_valid_unit_scale(self) -> None:
         config = load_configuration([])
-        sampled = sample_hemisphere(config.center, config.radius, 3, (15.0, 80.0))
+        sampled = sample_hemisphere(config.center, config.radius, 1, 3, (15.0, 80.0))
         reachable = [
             ReachableViewpoint(viewpoint, viewpoint.camera_pose, np.zeros(7))
             for viewpoint in sampled[:2]

@@ -25,7 +25,8 @@ and execute a selected grasp through `RobotAPI`.
 | `scripts/scene_reconstruction/run_random_objects.sh` | Spawn five random objects from the configured YCB pool. |
 | `scripts/multi_view_scan/multi_view_scan.py` | Reachability-filtered, overlap-aware dual-arm scan and RGB-D capture. |
 | `scripts/multi_view_scan/scan_trajectory.py` | Pure spiral generation, projection overlap, open-TSP, and constrained 2-opt. |
-| `scripts/path_planning_single/` | No-motion single-arm MoveIt IK experiment and RViz paper visualization. |
+| `scripts/path_planning_single/single_path_planner.py` | No-motion single-arm MoveIt IK experiment and RViz paper visualization. |
+| `scripts/path_planning_single/single_view_scan.py` | Kinova single-arm scan execution with RGB-D, Isaac segmentation, and camera TF capture. |
 | `scripts/multi_view_scan/moveit_ik.py` | Read-only collision-aware MoveIt multi-tip IK client. |
 | `config/multi_view_scan.yaml` | Complete configurable parameter set for multiview scanning. |
 | `scripts/scene_reconstruction/scene_reconstruction.py` | Merge captured RGB-D views into a world-frame scene cloud. |
@@ -161,6 +162,8 @@ moving. It then:
 - sends both arm targets together with `move_l_dual`;
 - continues to the next viewpoint when a motion call raises `RobotAPIError`;
 - saves images under `scan_output/steps/step_001`, `step_002`, and so on;
+- in simulation mode, requests left and right per-object segmentation masks
+  from Isaac Sim after each RGB-D capture;
 - saves IK rejections, metrics and orders for all three trajectory modes,
   the selected capture order,
   successful capture records, and relative image paths in
@@ -187,6 +190,7 @@ python3 scripts/multi_view_scan/multi_view_scan.py \
   --two-opt-passes 30 \
   --trajectory-mode hamilton_2opt \
   --random-seed 7 \
+  --robot-mode simulation \
   --ik-timeout 0.25 \
   --trajectory-line-width 0.015 \
   --before-trajectory-color-rgb 255 0 255 \
@@ -213,6 +217,30 @@ All modes use the same IK-reachable pose set. The random and spiral baselines
 may contain edges below `minimum_neighbor_overlap`; their violation counts are
 written to the manifest. The Hamiltonian 2-opt route enforces the threshold on
 every neighboring edge.
+
+With `--robot-mode simulation` (the default), the scanner requires Isaac Sim's
+`/save_object_segmentations` service before motion. After each successful
+RGB-D pair it calls the service for both configured hand-eye camera frames. The
+service writes masks beneath the matching step, for example:
+
+```text
+scan_output/steps/step_001/
+├── left_color.png
+├── left_depth.png
+├── left_handeye_camera_color_optical_frame/capture_000000/
+│   ├── manifest.json
+│   └── <object>.png
+├── right_color.png
+├── right_depth.png
+└── right_handeye_camera_color_optical_frame/capture_000000/
+    ├── manifest.json
+    └── <object>.png
+```
+
+Use `--robot-mode real --no-use-sim-time` for real hardware. In real mode no
+segmentation client is created and the Isaac service is never called. A
+per-camera segmentation failure during simulation is recorded in
+`manifest.json` without discarding the RGB-D images or stopping later views.
 
 The overlap model projects a deterministic spherical surface proxy through the
 intrinsics in `--camera-yaml`. If planning cannot connect all reachable poses

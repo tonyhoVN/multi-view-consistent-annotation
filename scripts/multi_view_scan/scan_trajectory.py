@@ -414,13 +414,93 @@ def open_path_cost(
     )
 
 
+def _backtracking_hamiltonian_path(
+    costs: np.ndarray,
+    overlap: np.ndarray,
+    candidate_starts: Sequence[int],
+    minimum_overlap: float,
+    max_states: int = 1_000_000,
+) -> list[int] | None:
+    """Find a feasible path after greedy search fails, with bounded DFS."""
+    count = len(costs)
+    adjacency = [
+        [
+            neighbor
+            for neighbor in range(count)
+            if neighbor != vertex
+            and overlap[vertex, neighbor] + 1e-12 >= minimum_overlap
+        ]
+        for vertex in range(count)
+    ]
+    explored_states = 0
+    dead_states: set[tuple[int, frozenset[int]]] = set()
+
+    def remaining_is_connected(current: int, unvisited: set[int]) -> bool:
+        """Prune branches whose remaining induced graph is disconnected."""
+        pending = [current]
+        seen = {current}
+        allowed = unvisited | {current}
+        while pending:
+            vertex = pending.pop()
+            for neighbor in adjacency[vertex]:
+                if neighbor in allowed and neighbor not in seen:
+                    seen.add(neighbor)
+                    pending.append(neighbor)
+        return unvisited.issubset(seen)
+
+    def search(path: list[int], unvisited: set[int]) -> list[int] | None:
+        nonlocal explored_states
+        explored_states += 1
+        if explored_states > max_states:
+            raise RuntimeError(
+                "Hamiltonian fallback exceeded its search limit; lower the overlap "
+                "threshold or increase sampling connectivity"
+            )
+        if not unvisited:
+            return path.copy()
+        current = path[-1]
+        state = (current, frozenset(unvisited))
+        if state in dead_states:
+            return None
+        if not remaining_is_connected(current, unvisited):
+            dead_states.add(state)
+            return None
+
+        # Visit constrained vertices first, then prefer the lower motion cost.
+        candidates = [vertex for vertex in adjacency[current] if vertex in unvisited]
+        candidates.sort(
+            key=lambda vertex: (
+                sum(neighbor in unvisited for neighbor in adjacency[vertex]),
+                costs[current, vertex],
+                vertex,
+            )
+        )
+        for vertex in candidates:
+            path.append(vertex)
+            unvisited.remove(vertex)
+            result = search(path, unvisited)
+            if result is not None:
+                return result
+            unvisited.add(vertex)
+            path.pop()
+        dead_states.add(state)
+        return None
+
+    for start in candidate_starts:
+        result = search([start], set(range(count)) - {start})
+        if result is not None:
+            return result
+    return None
+
+
 def nearest_neighbor_open_path(
     edge_costs: npt.ArrayLike,
     overlaps: npt.ArrayLike,
     start_costs: npt.ArrayLike,
     minimum_overlap: float,
+    start_mode: str = "all_accepted",
 ) -> list[int]:
-    """Build the best feasible greedy open path over all possible start vertices."""
+    """Build a feasible greedy path from the initial-nearest or every start."""
     costs = np.asarray(edge_costs, dtype=np.float64)
     overlap = np.asarray(overlaps, dtype=np.float64)
     starts = np.asarray(start_costs, dtype=np.float64)
@@ -429,13 +509,17 @@ def nearest_neighbor_open_path(
         raise ValueError("path matrices and start costs have inconsistent sizes")
     if not 0.0 <= minimum_overlap <= 1.0:
         raise ValueError("minimum overlap must lie in [0, 1]")
+    if start_mode not in {"initial_pose", "all_accepted"}:
+        raise ValueError("start_mode must be 'initial_pose' or 'all_accepted'")
     if count == 0:
         return []
 
-    # Try every start because one greedy choice can enter an overlap dead end.
+    # Either anchor at the initial-nearest view or search every accepted start.
+    ordered_starts = sorted(range(count), key=lambda index: (starts[index], index))
+    candidate_starts = ordered_starts[:1] if start_mode == "initial_pose" else ordered_starts
     best_path: list[int] | None = None
     best_cost = math.inf
-    for start in sorted(range(count), key=lambda index: (starts[index], index)):
+    for start in candidate_starts:
         path = [start]
         unvisited = set(range(count)) - {start}
         while unvisited:
@@ -458,9 +542,14 @@ def nearest_neighbor_open_path(
             best_cost = candidate_cost
 
     if best_path is None:
-        raise ValueError(
-            "no overlap-feasible greedy path visits every reachable viewpoint"
+        best_path = _backtracking_hamiltonian_path(
+            costs,
+            overlap,
+            candidate_starts,
+            minimum_overlap,
         )
+    if best_path is None:
+        raise ValueError("no overlap-feasible Hamiltonian path visits every viewpoint")
     return best_path
 
 
@@ -471,6 +560,7 @@ def two_opt_open_path(
     start_costs: npt.ArrayLike,
     minimum_overlap: float,
     max_passes: int,
+    lock_first: bool = False,
 ) -> list[int]:
     """Improve an open path with deterministic overlap-constrained 2-opt."""
     if max_passes < 0:
@@ -486,7 +576,8 @@ def two_opt_open_path(
         current_cost = open_path_cost(path, edge_costs, start_costs)
         best_path = path
         best_cost = current_cost
-        for first in range(len(path) - 1):
+        first_reversal_index = 1 if lock_first else 0
+        for first in range(first_reversal_index, len(path) - 1):
             for last in range(first + 1, len(path)):
                 candidate = path[:first] + list(reversed(path[first : last + 1])) + path[last + 1 :]
                 if not path_has_minimum_overlap(candidate, overlaps, minimum_overlap):

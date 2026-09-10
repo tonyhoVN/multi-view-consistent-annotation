@@ -36,6 +36,10 @@ from multi_view_scan.aux_math import (  # noqa: E402
     transform_from_euler,
 )
 from multi_view_scan.moveit_ik import MoveItIKClient  # noqa: E402
+from multi_view_scan.isaac_segmentation import (  # noqa: E402
+    IsaacSegmentationClient,
+    SegmentationServiceError,
+)
 from robot_api import RobotAPI, RobotAPIError  # noqa: E402
 from multi_view_scan.scan_trajectory import (  # noqa: E402
     CameraIntrinsics,
@@ -234,6 +238,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--planning-group", default="dual_arm")
     parser.add_argument(
+        "--robot-mode",
+        choices=("simulation", "real"),
+        default="simulation",
+        help="enable Isaac-only services in simulation and disable them on real hardware",
+    )
+    parser.add_argument(
+        "--segmentation-service",
+        default="/save_object_segmentations",
+        help="Isaac Sim SetParametersAtomically segmentation service",
+    )
+    parser.add_argument(
+        "--segmentation-timeout",
+        type=float,
+        default=35.0,
+        help="wall-clock timeout for each Isaac segmentation capture",
+    )
+    parser.add_argument(
         "--ik-service",
         default="/compute_ik",
         help="MoveIt GetPositionIK service used only for reachability filtering",
@@ -421,6 +442,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("radius must be finite and greater than zero")
     if args.view_count <= 0:
         raise ValueError("view-count must be positive")
+    if args.robot_mode == "simulation" and not args.segmentation_service:
+        raise ValueError("segmentation-service must not be empty in simulation mode")
     if not 0.0 < args.azimuth_bounds[0] < args.azimuth_bounds[1] < 180.0:
         raise ValueError("azimuth-bounds must satisfy 0 < MIN < MAX < 180")
     if not 0.0 <= args.elevation_bounds[0] < args.elevation_bounds[1] < 90.0:
@@ -433,6 +456,7 @@ def validate_args(args: argparse.Namespace) -> None:
         "ik_timeout",
         "joint_state_timeout",
         "scan_volume_radius",
+        "segmentation_timeout",
         "trajectory_point_time",
         "trajectory_line_width",
     ):
@@ -745,6 +769,34 @@ def reachable_viewpoint_record(
     }
 
 
+def save_simulation_segmentations(
+    client: IsaacSegmentationClient,
+    step_directory: Path,
+    output_directory: Path,
+    camera_frames: dict[str, str],
+    timeout: float,
+) -> dict[str, dict[str, str]]:
+    """Capture both Isaac masks and return manifest-ready status records."""
+    records = {}
+    for side, camera_frame in camera_frames.items():
+        try:
+            capture_directory = client.save(
+                step_directory, camera_frame, timeout
+            )
+            relative_directory = capture_directory.relative_to(output_directory)
+        except (SegmentationServiceError, ValueError, OSError) as error:
+            print(f"  {side} segmentation failed; continuing scan: {error}")
+            records[side] = {"status": "failed", "error": str(error)}
+            continue
+        records[side] = {
+            "status": "saved",
+            "directory": str(relative_directory),
+            "manifest": str(relative_directory / "manifest.json"),
+        }
+        print(f"  saved {side} segmentation to {capture_directory}")
+    return records
+
+
 def run_scan(args: argparse.Namespace) -> None:
     center = np.asarray(args.center, dtype=np.float64)
     left_camera_quarter_turn = transform_from_euler("z", -90.0, degrees=True)
@@ -780,6 +832,20 @@ def run_scan(args: argparse.Namespace) -> None:
         "steps_directory": str(steps_dir.relative_to(output_dir)),
         "camera_calibration": str(args.camera_yaml.expanduser().resolve()),
         "camera_intrinsics": asdict(intrinsics),
+        "simulation_segmentation": {
+            "enabled": args.robot_mode == "simulation",
+            "robot_mode": args.robot_mode,
+            "service": (
+                args.segmentation_service
+                if args.robot_mode == "simulation"
+                else None
+            ),
+            "timeout_s": (
+                args.segmentation_timeout
+                if args.robot_mode == "simulation"
+                else None
+            ),
+        },
         "planner": {
             "pipeline": [
                 "golden_angle_spiral",
@@ -866,6 +932,16 @@ def run_scan(args: argparse.Namespace) -> None:
                 use_sim_time=args.use_sim_time,
             )
         )
+        segmentation_client = None
+        if args.robot_mode == "simulation":
+            segmentation_client = stack.enter_context(
+                IsaacSegmentationClient(
+                    args.segmentation_service,
+                    use_sim_time=args.use_sim_time,
+                )
+            )
+            segmentation_client.wait_for_service(args.segmentation_timeout)
+            print(f"Isaac segmentation service ready: {args.segmentation_service}")
 
         # Confirm both private nodes receive an advancing Isaac Sim clock.
         if args.use_sim_time:
@@ -1164,6 +1240,18 @@ def run_scan(args: argparse.Namespace) -> None:
                 str(step_dir / "right_depth.png"),
                 wait_timeout=args.camera_timeout,
             )
+            segmentation_records = {}
+            if segmentation_client is not None:
+                segmentation_records = save_simulation_segmentations(
+                    segmentation_client,
+                    step_dir,
+                    output_dir,
+                    {
+                        "left": args.left_camera_frame,
+                        "right": args.right_camera_frame,
+                    },
+                    args.segmentation_timeout,
+                )
 
             actual_left = actual_camera_transform(
                 robot, args.world_frame, args.left_camera_frame, args.tf_timeout
@@ -1186,6 +1274,11 @@ def run_scan(args: argparse.Namespace) -> None:
                         "actual_camera_pose": transform_record(actual_left),
                         "color_image": str(left_color.relative_to(output_dir)),
                         "depth_image": str(left_depth.relative_to(output_dir)),
+                        **(
+                            {"segmentation": segmentation_records["left"]}
+                            if "left" in segmentation_records
+                            else {}
+                        ),
                     },
                     "right": {
                         "assignment": "y < 0",
@@ -1194,6 +1287,11 @@ def run_scan(args: argparse.Namespace) -> None:
                         "actual_camera_pose": transform_record(actual_right),
                         "color_image": str(right_color.relative_to(output_dir)),
                         "depth_image": str(right_depth.relative_to(output_dir)),
+                        **(
+                            {"segmentation": segmentation_records["right"]}
+                            if "right" in segmentation_records
+                            else {}
+                        ),
                     },
                 }
             )
