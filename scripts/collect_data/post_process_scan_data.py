@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove missing transforms and implausible pose jumps from scan trajectories.
+"""Clean a scan trajectory and renumber its saved files into refined path order.
 
 Examples:
     python3 scripts/collect_data/post_process_scan_data.py \
@@ -20,6 +20,7 @@ import shutil
 import sys
 import tempfile
 from typing import Any, Sequence
+from uuid import uuid4
 
 import numpy as np
 import yaml
@@ -196,6 +197,238 @@ def clean_routes(
     return removed_by_route
 
 
+def selected_route_names(
+    manifest: dict[str, Any], selected_routes: set[str] | None
+) -> set[str]:
+    """Resolve the routes selected by CLI defaults and validate their names."""
+    routes = manifest["routes"]
+    names = selected_routes
+    if names is None:
+        names = {name for name in routes if name.startswith("hamilton_2opt")}
+        if not names:
+            raise ValueError("manifest contains no Hamilton 2-opt route")
+    unknown = names - set(routes)
+    if unknown:
+        raise ValueError(f"unknown route(s): {', '.join(sorted(unknown))}")
+    return names
+
+
+def resolve_manifest_path(value: str, manifest_path: Path) -> Path:
+    """Resolve a manifest path relative to the directory containing the manifest."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else manifest_path.parent / path
+
+
+def _link_or_copy(source: str, destination: str) -> str:
+    """Hard-link immutable scan data when possible, falling back to a copy."""
+    try:
+        os.link(source, destination)
+        return destination
+    except OSError:
+        return shutil.copy2(source, destination)
+
+
+def _safe_output_directory(
+    manifest: dict[str, Any], manifest_path: Path, key: str
+) -> Path:
+    """Resolve and constrain one generated-data directory to the scan root."""
+    directories = manifest.get("directories")
+    if not isinstance(directories, dict) or not isinstance(directories.get(key), str):
+        raise ValueError(f"manifest has no directories.{key} path")
+    path = resolve_manifest_path(directories[key], manifest_path).resolve()
+    try:
+        relative = path.relative_to(manifest_path.parent)
+    except ValueError as error:
+        raise ValueError(f"directories.{key} is outside the scan root: {path}") from error
+    if not relative.parts or relative == Path("."):
+        raise ValueError(f"directories.{key} cannot be the scan root")
+    if not path.is_dir():
+        raise FileNotFoundError(f"directories.{key} does not exist: {path}")
+    return path
+
+
+def _copy_file_to_staging(source: Path, destination: Path) -> None:
+    """Validate and stage one file under its canonical destination name."""
+    if not source.is_file():
+        raise FileNotFoundError(f"recorded scan file does not exist: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _link_or_copy(str(source), str(destination))
+
+
+def canonicalize_route_files(
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    route_name: str,
+    *,
+    dry_run: bool,
+) -> tuple[list[dict[str, int]], Path | None, list[tuple[Path, Path]]]:
+    """Rename scan products to consecutive route order and update capture records.
+
+    The replacement directories are assembled first. Original directories are
+    then moved to a backup before the replacements are installed. The returned
+    swap list allows the caller to roll back if writing the manifest fails.
+    """
+    sample_indices = [
+        int(index) for index in manifest["routes"][route_name]["sample_indices"]
+    ]
+    captures = {
+        int(capture["sample_index"]): capture
+        for capture in manifest["captures"]
+        if isinstance(capture, dict)
+        and capture.get("status") == "captured"
+        and "sample_index" in capture
+    }
+    missing = [index for index in sample_indices if index not in captures]
+    if missing:
+        raise ValueError(
+            f"refined route contains samples without capture records: {missing}"
+        )
+
+    roots = {
+        key: _safe_output_directory(manifest, manifest_path, key)
+        for key in ("images", "segments", "transforms")
+    }
+    mapping = [
+        {"path_index": path_index, "sample_index": sample_index}
+        for path_index, sample_index in enumerate(sample_indices)
+    ]
+    if dry_run:
+        return mapping, None, []
+
+    staging_root = Path(
+        tempfile.mkdtemp(prefix=f".{manifest_path.stem}_refined_", dir=manifest_path.parent)
+    )
+    updated_captures: list[dict[str, Any]] = []
+    swaps: list[tuple[Path, Path]] = []
+    backup_root: Path | None = None
+    try:
+        for original in roots.values():
+            (staging_root / original.relative_to(manifest_path.parent)).mkdir(
+                parents=True, exist_ok=True
+            )
+
+        # Build complete replacement directories before touching recorded data.
+        for path_index, sample_index in enumerate(sample_indices):
+            capture = dict(captures[sample_index])
+            color_source = resolve_manifest_path(capture["color_image"], manifest_path)
+            depth_source = resolve_manifest_path(capture["depth_image"], manifest_path)
+            transform_source = resolve_manifest_path(
+                capture["camera_transform"], manifest_path
+            )
+            color_target = roots["images"] / f"color_{path_index}{color_source.suffix}"
+            depth_target = roots["images"] / f"depth_{path_index}{depth_source.suffix}"
+            transform_target = roots["transforms"] / f"T_base_cam_{path_index}.npy"
+            for source, target in (
+                (color_source, color_target),
+                (depth_source, depth_target),
+                (transform_source, transform_target),
+            ):
+                staged = staging_root / target.relative_to(manifest_path.parent)
+                _copy_file_to_staging(source, staged)
+
+            capture["path_index"] = path_index
+            capture["color_image"] = str(color_target.relative_to(manifest_path.parent))
+            capture["depth_image"] = str(depth_target.relative_to(manifest_path.parent))
+            capture["camera_transform"] = str(
+                transform_target.relative_to(manifest_path.parent)
+            )
+
+            # Preserve Isaac's subtree while renaming its segment_<sample> root.
+            segmentation = capture.get("segmentation")
+            if isinstance(segmentation, dict) and segmentation.get("status") == "saved":
+                segmentation = dict(segmentation)
+                source_directory = resolve_manifest_path(
+                    segmentation["directory"], manifest_path
+                )
+                try:
+                    relative_source = source_directory.relative_to(roots["segments"])
+                except ValueError as error:
+                    raise ValueError(
+                        f"unexpected segmentation directory for sample {sample_index}: "
+                        f"{source_directory}"
+                    ) from error
+                if not relative_source.parts or not relative_source.parts[0].startswith(
+                    "segment_"
+                ):
+                    raise ValueError(
+                        f"segmentation directory has no segment_<index> component: "
+                        f"{source_directory}"
+                    )
+                suffix = Path(*relative_source.parts[1:])
+                target_directory = roots["segments"] / f"segment_{path_index}" / suffix
+                staged_directory = (
+                    staging_root / target_directory.relative_to(manifest_path.parent)
+                )
+                if not source_directory.is_dir():
+                    raise FileNotFoundError(
+                        f"segmentation directory does not exist: {source_directory}"
+                    )
+                shutil.copytree(
+                    source_directory,
+                    staged_directory,
+                    copy_function=_link_or_copy,
+                )
+                source_manifest = resolve_manifest_path(
+                    segmentation["manifest"], manifest_path
+                )
+                manifest_suffix = source_manifest.relative_to(source_directory)
+                target_manifest = target_directory / manifest_suffix
+                segmentation["directory"] = str(
+                    target_directory.relative_to(manifest_path.parent)
+                )
+                segmentation["manifest"] = str(
+                    target_manifest.relative_to(manifest_path.parent)
+                )
+                capture["segmentation"] = segmentation
+            updated_captures.append(capture)
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_root = manifest_path.parent / (
+            f"postprocess_backup_{manifest_path.stem}_{timestamp}_{uuid4().hex[:8]}"
+        )
+        backup_root.mkdir()
+
+        # Swap each complete artifact directory; originals remain recoverable.
+        for key, original in roots.items():
+            backup = backup_root / original.name
+            replacement = staging_root / original.relative_to(manifest_path.parent)
+            original.rename(backup)
+            swaps.append((original, backup))
+            try:
+                replacement.rename(original)
+            except Exception:
+                backup.rename(original)
+                swaps.pop()
+                raise
+        manifest["captures"] = updated_captures
+    except Exception:
+        for original, backup in reversed(swaps):
+            if original.exists():
+                original.rename(staging_root / original.relative_to(manifest_path.parent))
+            if backup.exists():
+                backup.rename(original)
+        if backup_root is not None and backup_root.exists():
+            backup_root.rmdir()
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise
+    shutil.rmtree(staging_root, ignore_errors=True)
+    return mapping, backup_root, swaps
+
+
+def rollback_directory_swaps(
+    swaps: list[tuple[Path, Path]], backup_root: Path | None
+) -> None:
+    """Restore original artifact directories after a manifest-write failure."""
+    rollback_root = Path(tempfile.mkdtemp(prefix=".postprocess_rollback_", dir=swaps[0][0].parent))
+    for original, backup in reversed(swaps):
+        if original.exists():
+            original.rename(rollback_root / original.name)
+        backup.rename(original)
+    shutil.rmtree(rollback_root, ignore_errors=True)
+    if backup_root is not None and backup_root.exists():
+        backup_root.rmdir()
+
+
 def write_manifest_atomically(
     manifest_path: Path, manifest: dict[str, Any], create_backup: bool
 ) -> Path | None:
@@ -237,10 +470,18 @@ def process_manifest(
     filter_jumps: bool,
     translation_threshold_m: float,
     rotation_threshold_deg: float,
-) -> tuple[dict[str, list[int]], set[int], dict[int, dict[str, float]]]:
+    rename_files: bool,
+) -> tuple[
+    dict[str, list[int]],
+    set[int],
+    dict[int, dict[str, float]],
+    list[dict[str, int]],
+    Path | None,
+]:
     """Clean selected routes in one manifest and record the operation."""
     manifest_path = manifest_path.expanduser().resolve()
     manifest = load_manifest(manifest_path)
+    route_names = selected_route_names(manifest, selected_routes)
     transforms = captured_transforms(manifest, manifest_path)
     available = set(transforms)
 
@@ -255,7 +496,20 @@ def process_manifest(
             rotation_threshold_deg,
         )
     valid = available - set(jumps)
-    removed_by_route = clean_routes(manifest, valid, selected_routes)
+    removed_by_route = clean_routes(manifest, valid, route_names)
+
+    renumbering: list[dict[str, int]] = []
+    artifact_backup: Path | None = None
+    swaps: list[tuple[Path, Path]] = []
+    if rename_files:
+        if len(route_names) != 1:
+            raise ValueError(
+                "saved files can follow only one route; pass exactly one --route"
+            )
+        route_name = next(iter(route_names))
+        renumbering, artifact_backup, swaps = canonicalize_route_files(
+            manifest, manifest_path, route_name, dry_run=dry_run
+        )
 
     manifest["trajectory_postprocess"] = {
         "processed_at": datetime.now(timezone.utc).isoformat(),
@@ -263,6 +517,13 @@ def process_manifest(
         "jump_filter_enabled": filter_jumps,
         "translation_threshold_m": translation_threshold_m,
         "rotation_threshold_deg": rotation_threshold_deg,
+        "files_renamed_to_route_order": rename_files,
+        "renumbering": renumbering,
+        "artifact_backup": (
+            str(artifact_backup.relative_to(manifest_path.parent))
+            if artifact_backup is not None
+            else None
+        ),
         "route_metrics_recomputed": False,
         "routes": {
             route_name: {
@@ -280,13 +541,20 @@ def process_manifest(
         },
     }
     if not dry_run:
-        backup_path = write_manifest_atomically(
-            manifest_path, manifest, create_backup=create_backup
-        )
+        try:
+            backup_path = write_manifest_atomically(
+                manifest_path, manifest, create_backup=create_backup
+            )
+        except Exception:
+            if swaps:
+                rollback_directory_swaps(swaps, artifact_backup)
+            raise
         print(f"Updated manifest: {manifest_path}")
         if backup_path is not None:
             print(f"Original backup: {backup_path}")
-    return removed_by_route, available, jumps
+        if artifact_backup is not None:
+            print(f"Original artifact directories: {artifact_backup}")
+    return removed_by_route, available, jumps, renumbering, artifact_backup
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -335,6 +603,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="only remove samples with missing or invalid transform files",
     )
+    parser.add_argument(
+        "--no-rename-files",
+        action="store_true",
+        help="keep sample-index filenames instead of renumbering into route order",
+    )
     return parser
 
 
@@ -345,7 +618,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if args.rotation_threshold_deg <= 0.0:
         raise ValueError("--rotation-threshold-deg must be positive")
     selected_routes = set(args.route) if args.route else None
-    removed_by_route, available, jumps = process_manifest(
+    removed_by_route, available, jumps, renumbering, _ = process_manifest(
         args.manifest,
         selected_routes,
         dry_run=args.dry_run,
@@ -354,6 +627,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         filter_jumps=not args.no_jump_filter,
         translation_threshold_m=args.translation_threshold,
         rotation_threshold_deg=args.rotation_threshold_deg,
+        rename_files=not args.no_rename_files,
     )
     for route_name, removed in removed_by_route.items():
         missing = [index for index in removed if index not in available]
@@ -372,6 +646,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
             print(f"{route_name}: removed {len(jumped)} pose jump(s): {details}")
         if not missing and not jumped:
             print(f"{route_name}: no missing samples or pose jumps")
+    if renumbering:
+        verb = "Would renumber" if args.dry_run else "Renumbered"
+        print(
+            f"{verb} {len(renumbering)} captured views to consecutive "
+            f"path indices 0..{len(renumbering) - 1}"
+        )
     return 0
 
 

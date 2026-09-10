@@ -1,0 +1,13 @@
+scipy
+numpy
+opencv-python
+torch
+Pillow
+supervision
+tqdm
+transformers
+segment-anything
+qwen-vl-utils
+open3d
+PyYAML
+matplotlib
