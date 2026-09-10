@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Visualize 4x4 TF matrices stored as .npy files in a directory.
+"""Visualize saved TF matrices and the Hamilton trajectory from a scan manifest.
 
 Usage:
-    python visualize_tf.py [directory] [--max-frames N] [--axis-len L]
+    python visualize_tf.py [directory] [--manifest manifest_run.json]
 """
 import argparse
 import glob
+import json
 import os
+from pathlib import Path
 import re
 
 import numpy as np
@@ -33,7 +35,70 @@ def load_tf_matrices(directory):
     return names, matrices
 
 
-def plot_frames(names, matrices, axis_len=0.05, max_frames=None):
+def infer_manifest_path(directory):
+    """Infer manifest_<suffix>.json from a save_TF_<suffix> directory."""
+    directory = Path(directory).expanduser().resolve()
+    match = re.fullmatch(r"save_TF_(.+)", directory.name)
+    candidates = []
+    if match:
+        candidates.append(directory.parent / f"manifest_{match.group(1)}.json")
+    candidates.append(directory.parent / "manifest_run.json")
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def load_hamilton_trajectory(manifest_path):
+    """Load captured camera transforms in the manifest's Hamilton path order."""
+    manifest_path = Path(manifest_path).expanduser().resolve()
+    with manifest_path.open("r", encoding="utf-8") as stream:
+        manifest = json.load(stream)
+
+    try:
+        sample_order = manifest["routes"]["hamilton_2opt"]["sample_indices"]
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            f"{manifest_path} has no routes.hamilton_2opt.sample_indices"
+        ) from error
+    if not isinstance(sample_order, list):
+        raise ValueError("Hamilton sample_indices must be a list")
+
+    # A failed motion has no camera_transform, so only plot captured viewpoints.
+    transform_by_sample = {}
+    for capture in manifest.get("captures", []):
+        if not isinstance(capture, dict) or "camera_transform" not in capture:
+            continue
+        try:
+            sample_index = int(capture["sample_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        transform_by_sample[sample_index] = manifest_path.parent / capture["camera_transform"]
+
+    indices, matrices, missing = [], [], []
+    for raw_index in sample_order:
+        try:
+            sample_index = int(raw_index)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid Hamilton sample index {raw_index!r}") from error
+        transform_path = transform_by_sample.get(sample_index)
+        if transform_path is None or not transform_path.is_file():
+            missing.append(sample_index)
+            continue
+        matrix = np.load(transform_path)
+        if matrix.shape != (4, 4):
+            print(f"skipping {transform_path}: shape {matrix.shape} != (4, 4)")
+            missing.append(sample_index)
+            continue
+        indices.append(sample_index)
+        matrices.append(matrix)
+    return indices, matrices, missing
+
+
+def plot_frames(
+    names,
+    matrices,
+    axis_len=0.05,
+    max_frames=None,
+    trajectory_matrices=None,
+):
     if max_frames is not None:
         names = names[:max_frames]
         matrices = matrices[:max_frames]
@@ -59,13 +124,41 @@ def plot_frames(names, matrices, axis_len=0.05, max_frames=None):
 
     ax.scatter(origins[:, 0], origins[:, 1], origins[:, 2], color="k", s=8, alpha=0.6)
 
+    if trajectory_matrices:
+        trajectory_origins = np.asarray(
+            [matrix[:3, 3] for matrix in trajectory_matrices], dtype=np.float64
+        )
+        ax.plot(
+            trajectory_origins[:, 0],
+            trajectory_origins[:, 1],
+            trajectory_origins[:, 2],
+            color="#19ff00",
+            linewidth=3.0,
+            marker="o",
+            markersize=3.5,
+            label="Hamilton + 2-opt",
+            zorder=10,
+        )
+        ax.scatter(
+            *trajectory_origins[0], color="#00ffff", s=45, label="trajectory start", zorder=11
+        )
+        ax.scatter(
+            *trajectory_origins[-1], color="#ff00ff", s=45, label="trajectory end", zorder=11
+        )
+        ax.legend(loc="best")
+
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
-    ax.set_title(f"TF frames ({len(matrices)} matrices)")
+    title = f"TF frames ({len(matrices)} matrices)"
+    if trajectory_matrices:
+        title += f"; Hamilton path ({len(trajectory_matrices)} captured views)"
+    ax.set_title(title)
 
-    # keep equal aspect ratio
+    # Include the route in the equal-aspect bounds even when --max-frames is used.
     all_pts = origins
+    if trajectory_matrices:
+        all_pts = np.vstack((all_pts, trajectory_origins))
     center = all_pts.mean(axis=0)
     spread = np.max(np.ptp(all_pts, axis=0)) / 2 + axis_len
     spread = max(spread, 1e-3)
@@ -83,6 +176,15 @@ def main():
     )
     parser.add_argument("--max-frames", type=int, default=None, help="limit number of frames plotted")
     parser.add_argument("--axis-len", type=float, default=0.05, help="length of drawn axes")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help=(
+            "scan manifest containing routes.hamilton_2opt; by default infer "
+            "manifest_<suffix>.json from the TF directory name"
+        ),
+    )
     parser.add_argument("--save", type=str, default=None, help="path to save figure instead of showing")
     args = parser.parse_args()
 
@@ -91,8 +193,32 @@ def main():
         print(f"No valid 4x4 .npy files found in {args.directory}")
         return
 
+    manifest_path = args.manifest or infer_manifest_path(args.directory)
+    trajectory_indices, trajectory_matrices = [], []
+    if manifest_path is None:
+        print("No scan manifest found; plotting TF frames without a Hamilton trajectory")
+    else:
+        trajectory_indices, trajectory_matrices, missing = load_hamilton_trajectory(
+            manifest_path
+        )
+        print(
+            f"Loaded Hamilton trajectory with {len(trajectory_matrices)} captured "
+            f"views from {manifest_path}"
+        )
+        if missing:
+            print(
+                "Hamilton samples without a saved transform (skipped): "
+                + ", ".join(map(str, missing))
+            )
+
     print(f"Loaded {len(matrices)} TF matrices from {args.directory}")
-    fig = plot_frames(names, matrices, axis_len=args.axis_len, max_frames=args.max_frames)
+    fig = plot_frames(
+        names,
+        matrices,
+        axis_len=args.axis_len,
+        max_frames=args.max_frames,
+        trajectory_matrices=trajectory_matrices,
+    )
 
     if args.save:
         fig.savefig(args.save, dpi=150)

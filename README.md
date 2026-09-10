@@ -27,6 +27,7 @@ and execute a selected grasp through `RobotAPI`.
 | `scripts/multi_view_scan/scan_trajectory.py` | Pure spiral generation, projection overlap, open-TSP, and constrained 2-opt. |
 | `scripts/path_planning_single/single_path_planner.py` | No-motion single-arm MoveIt IK experiment and RViz paper visualization. |
 | `scripts/path_planning_single/single_view_scan.py` | Kinova single-arm scan execution with RGB-D, Isaac segmentation, and camera TF capture. |
+| `scripts/collect_data/collect_kinova_scans.py` | Repeated Kinova Isaac Sim, MoveIt, motion-server, and single-view scan supervision. |
 | `scripts/multi_view_scan/moveit_ik.py` | Read-only collision-aware MoveIt multi-tip IK client. |
 | `config/multi_view_scan.yaml` | Complete configurable parameter set for multiview scanning. |
 | `scripts/scene_reconstruction/scene_reconstruction.py` | Merge captured RGB-D views into a world-frame scene cloud. |

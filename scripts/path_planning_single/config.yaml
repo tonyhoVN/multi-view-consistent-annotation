@@ -16,7 +16,7 @@ single_path_planning:
   radius: 0.3
   # L latitude layers and K uniformly spaced azimuths produce L*K poses.
   latitude_layers: 5
-  azimuth_samples: 8
+  azimuth_samples: 18
   # initial_pose anchors the nearest first view; all_accepted searches every start.
   path_start_mode: initial_pose
   elevation_bounds: [30.0, 80.0]
@@ -89,6 +89,6 @@ single_view_scan:
   camera_timeout: 5.0
   tf_timeout: 2.0
   segmentation_timeout: 35.0
-  settle_time: 1.0
+  settle_time: 2.0
   target_preview_time: 0.5
   trajectory_preview_time: 1.0
