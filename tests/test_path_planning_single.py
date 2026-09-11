@@ -60,13 +60,13 @@ class SinglePathPlanningTests(unittest.TestCase):
             )
             self.assertGreaterEqual(config.trajectory_preview_time, 0.0)
             self.assertEqual(
-                directories["images"], output_root / "save_images_spiral_1"
+                directories["images"], output_root / "spiral_1" / "save_images"
             )
             self.assertEqual(
-                directories["segments"], output_root / "save_segment_spiral_1"
+                directories["segments"], output_root / "spiral_1" / "save_segment"
             )
             self.assertEqual(
-                directories["transforms"], output_root / "save_TF_spiral_1"
+                directories["transforms"], output_root / "spiral_1" / "save_TF"
             )
 
             # Reusing the suffix removes stale products from all three folders.
@@ -75,7 +75,7 @@ class SinglePathPlanningTests(unittest.TestCase):
             recreated = output_directories(config)
             self.assertFalse((recreated["images"] / "color_9.png").exists())
 
-            manifest = output_root / "manifest_spiral_1.json"
+            manifest = output_root / "spiral_1" / "manifest.json"
             manifest.write_text("stale", encoding="utf-8")
             clear_previous_manifest(manifest)
             self.assertFalse(manifest.exists())

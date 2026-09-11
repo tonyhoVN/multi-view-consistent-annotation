@@ -179,20 +179,21 @@ optimization still operates only on the IK-accepted hemisphere samples.
 For view index `i`, successful captures are:
 
 ```text
-scan_output/
-├── save_images_trial_01/color_i.png
-├── save_images_trial_01/depth_i.png
-├── save_segment_trial_01/segment_i/<camera-frame>/capture_000000/
+scan_output/trial_01/
+├── save_images/color_i.png
+├── save_images/depth_i.png
+├── save_segment/segment_i/<camera-frame>/capture_000000/
 │   ├── manifest.json
 │   └── <visible-object>.png
-└── save_TF_trial_01/T_base_cam_i.npy
+├── save_TF/T_base_cam_i.npy
+└── manifest.json
 ```
 
 The NumPy matrix is the measured $T_{base\_link}^{camera}$ TF after motion and
 settling. Pass `--no-save-segmentation` when the Isaac segmentation service is
-not being used. The suffix-specific `manifest_<suffix>.json` records rejected
+not being used. The run-specific `manifest.json` records rejected
 IK samples, every route, motion failures, and all saved paths.
 
-At startup, an existing `save_images_<suffix>`, `save_segment_<suffix>`,
-`save_TF_<suffix>`, and `manifest_<suffix>.json` are removed before new data is
-written. Other suffixes and unrelated files under `scan_output` are preserved.
+At startup, existing `save_images`, `save_segment`, `save_TF`, and `manifest.json`
+artifacts inside the selected run directory are removed before new data is
+written. Other run directories and `collection_log` are preserved.

@@ -53,17 +53,31 @@ python3 scripts/collect_data/collect_kinova_scans.py \
   --runs 5 --start-run 10 --robot-ip 192.168.1.10
 ```
 
-Each run receives a zero-padded suffix such as `run_010`. Scan products are
-therefore written to the suffix-specific directories managed by
-`single_view_scan.py`. Supervisor logs are kept under:
+Each run receives a prefix-scoped name such as `run_10`. All scan products,
+logs, annotations, and evaluation reports for that run live together:
 
 ```text
-scan_output/collection_logs/run_010/
-├── isaac.log
-├── moveit.log
-├── motion.log
-├── scan.log
-└── run.json
+scan_output/run_10/
+├── collection_log/
+│   ├── isaac.log
+│   ├── moveit.log
+│   ├── motion.log
+│   ├── scan.log
+│   └── run.json
+├── save_images/
+├── save_segment/
+├── save_TF/
+├── baseline_segment/
+│   ├── naive_vlm_zeroshot/
+│   └── naive_vlm_multi_shot/
+└── manifest.json
+```
+
+Migrate legacy runs without overwriting existing canonical artifacts:
+
+```bash
+python3 scripts/collect_data/migrate_scan_layout.py 1 24 --dry-run
+python3 scripts/collect_data/migrate_scan_layout.py 1 24
 ```
 
 By default, a failed run is shut down and the next run is attempted. Add

@@ -354,11 +354,11 @@ def print_report(report: dict[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path, help="scan_output/manifest_<run>.json")
+    parser.add_argument("manifest", type=Path, help="scan_output/<run>/manifest.json")
     parser.add_argument(
         "--predictions",
         type=Path,
-        help="transferred segmentation root (default: transfer_segment_<suffix>)",
+        help="prediction root (default: <run>/transfer_segment)",
     )
     parser.add_argument("--route", default="hamilton_2opt")
     parser.add_argument("--objects", nargs="+", help="optional class-name subset")
@@ -376,8 +376,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     )
     prediction_root = args.predictions
     if prediction_root is None:
-        suffix = str(scan_manifest.get("output_suffix", "scan"))
-        prediction_root = manifest_path.parent / f"transfer_segment_{suffix}"
+        prediction_root = manifest_path.parent / "transfer_segment"
     prediction_root = prediction_root.expanduser().resolve()
 
     # Load both sides before evaluation so all missing-data warnings are visible.
@@ -406,4 +405,3 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

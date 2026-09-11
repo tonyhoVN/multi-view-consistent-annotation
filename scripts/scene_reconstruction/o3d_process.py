@@ -298,8 +298,98 @@ def rgbd_to_pcd_mask(color_path, depth_path, mask, TF_base_cam, intrinsic):
     return pcd
 
 def remove_outlier_o3d(pcd, nb_neighbors=20, std_ratio=2.0):
-    cl, ind = pcd.remove_statistical_outlier(nb_neighbors, std_ratio)
-    return cl, ind
+    """Remove statistical neighbors while handling small clouds safely."""
+    point_count = len(pcd.points)
+    if point_count == 0:
+        return o3d.geometry.PointCloud(), []
+    if nb_neighbors < 1 or not np.isfinite(std_ratio) or std_ratio <= 0.0:
+        raise ValueError("outlier parameters must be positive")
+    if point_count <= nb_neighbors:
+        return copy.deepcopy(pcd), list(range(point_count))
+    filtered, indices = pcd.remove_statistical_outlier(
+        nb_neighbors=int(nb_neighbors), std_ratio=float(std_ratio)
+    )
+    return filtered, indices
+
+
+def trim_point_cloud_above_plane(
+    pcd: o3d.geometry.PointCloud,
+    plane_origin: Sequence[float],
+    plane_z_axis: Sequence[float],
+    clearance: float = 0.0,
+) -> o3d.geometry.PointCloud:
+    """Keep points above a table plane along its user-provided local +Z axis."""
+    origin = np.asarray(plane_origin, dtype=np.float64).reshape(3)
+    z_axis = np.asarray(plane_z_axis, dtype=np.float64).reshape(3)
+    if not np.all(np.isfinite(origin)) or not np.all(np.isfinite(z_axis)):
+        raise ValueError("table plane origin and Z axis must be finite")
+    norm = float(np.linalg.norm(z_axis))
+    if norm < 1e-9 or not np.isfinite(clearance):
+        raise ValueError("table Z axis must be nonzero and clearance finite")
+    z_axis /= norm
+
+    points = np.asarray(pcd.points, dtype=np.float64)
+    keep = ((points - origin) @ z_axis) > float(clearance)
+    trimmed = o3d.geometry.PointCloud()
+    trimmed.points = o3d.utility.Vector3dVector(points[keep])
+    if pcd.has_colors():
+        trimmed.colors = o3d.utility.Vector3dVector(np.asarray(pcd.colors)[keep])
+    if pcd.has_normals():
+        trimmed.normals = o3d.utility.Vector3dVector(np.asarray(pcd.normals)[keep])
+    return trimmed
+
+
+def pixels_to_point_cloud(
+    pixels: Any,
+    depth_map: np.ndarray,
+    transform: np.ndarray,
+    intrinsic: o3d.camera.PinholeCameraIntrinsic,
+    *,
+    maximum_depth: float = DEPTH_TRUNC,
+) -> o3d.geometry.PointCloud:
+    """Back-project UV pixels and depth into a world/base-frame point cloud."""
+    uv = np.asarray(pixels, dtype=np.float64).reshape(-1, 2)
+    depth = np.asarray(depth_map)
+    if depth.ndim != 2:
+        raise ValueError("depth map must be a single-channel image")
+    if depth.dtype == np.uint16:
+        depth = depth.astype(np.float32) / 1000.0
+    else:
+        depth = depth.astype(np.float32, copy=False)
+
+    # Round only for depth lookup while preserving subpixel UV for projection.
+    columns = np.rint(uv[:, 0]).astype(np.int64)
+    rows = np.rint(uv[:, 1]).astype(np.int64)
+    inside = (
+        (columns >= 0)
+        & (columns < depth.shape[1])
+        & (rows >= 0)
+        & (rows < depth.shape[0])
+    )
+    uv, columns, rows = uv[inside], columns[inside], rows[inside]
+    if not len(uv):
+        return o3d.geometry.PointCloud()
+    z = depth[rows, columns]
+    valid = np.isfinite(z) & (z > 0.0) & (z < float(maximum_depth))
+    uv, z = uv[valid], z[valid]
+    if not len(uv):
+        return o3d.geometry.PointCloud()
+
+    camera_points = np.column_stack(
+        (
+            (uv[:, 0] - intrinsic.intrinsic_matrix[0, 2])
+            * z
+            / intrinsic.intrinsic_matrix[0, 0],
+            (uv[:, 1] - intrinsic.intrinsic_matrix[1, 2])
+            * z
+            / intrinsic.intrinsic_matrix[1, 1],
+            z,
+        )
+    )
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(camera_points)
+    cloud.transform(np.asarray(transform, dtype=np.float64))
+    return cloud
 
 
 def _box_at_gripper_pose(

@@ -1,50 +1,26 @@
-"""Aggregate mAP and runtime across manifest runs for the three annotation
-methods: proposed transfer, naive VLM zeroshot, naive VLM multi-shot.
+"""Aggregate mAP and runtime for the Grounding DINO alias experiment.
 
-Reads, for each run in [start, end] and each method:
-  - <output_dir>/map_report.json   for mAP50 / mAP50_95
-  - <run>/<method>/transfer_manifest.json or naive_vlm_manifest.json
-    for runtime.total_seconds
+Unlike summarize_results.py (which reads a fixed method list), this scans
+each run_<n>/alias_segment/ directory and discovers whatever method
+subdirectories are actually present, so partially generated experiments
+(e.g. only transfer_segment for one run, all five variants for another) are
+summarized without extra flags.
+
+For each discovered subdirectory it reads:
+  - map_report.json               for mAP50 / mAP50_95
+  - transfer_manifest.json (transfer_segment*) or
+    naive_vlm_manifest.json (naive_vlm_*)        for runtime.total_seconds
 
 Usage:
-  python scripts/annotation_propagation/summarize_results.py [start] [end]
-  python scripts/annotation_propagation/summarize_results.py 1 24 --scan-dir scan_output
+  python scripts/annotation_propagation/summarize_alias_results.py [start] [end]
+  python scripts/annotation_propagation/summarize_alias_results.py 1 24 --scan-dir scan_output
 """
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-from typing import NamedTuple
 
-
-class Method(NamedTuple):
-    key: str
-    label: str
-    output_dir_template: str
-    runtime_manifest_name: str
-
-
-METHODS = [
-    Method(
-        "transfer",
-        "Proposed (transfer)",
-        "run_{run}/transfer_segment",
-        "transfer_manifest.json",
-    ),
-    Method(
-        "zeroshot",
-        "Naive VLM (zeroshot)",
-        "run_{run}/baseline_segment/naive_vlm_zeroshot",
-        "naive_vlm_manifest.json",
-    ),
-    Method(
-        "multi_shot",
-        "Naive VLM (multi-shot)",
-        "run_{run}/baseline_segment/naive_vlm_multi_shot",
-        "naive_vlm_manifest.json",
-    ),
-]
 
 def load_json(path: Path) -> dict | None:
     if not path.is_file():
@@ -55,18 +31,36 @@ def load_json(path: Path) -> dict | None:
         return None
 
 
+def runtime_manifest_name(method_dir_name: str) -> str:
+    return "transfer_manifest.json" if method_dir_name.startswith("transfer") else "naive_vlm_manifest.json"
+
+
+def discover_methods(scan_dir: Path, start: int, end: int) -> list[str]:
+    names: set[str] = set()
+    for run in range(start, end + 1):
+        alias_dir = scan_dir / f"run_{run}" / "alias_segment"
+        if not alias_dir.is_dir():
+            continue
+        for child in sorted(alias_dir.iterdir()):
+            if child.is_dir():
+                names.add(child.name)
+    return sorted(names)
+
+
 def collect(scan_dir: Path, start: int, end: int) -> dict[str, dict]:
+    methods = discover_methods(scan_dir, start, end)
     results: dict[str, dict] = {}
-    for method in METHODS:
+
+    for method in methods:
         map50_values = []
         map50_95_values = []
         runtime_values = []
         missing_runs = []
 
         for run in range(start, end + 1):
-            output_dir = scan_dir / method.output_dir_template.format(run=run)
+            output_dir = scan_dir / f"run_{run}" / "alias_segment" / method
             report = load_json(output_dir / "map_report.json")
-            runtime_doc = load_json(output_dir / method.runtime_manifest_name)
+            runtime_doc = load_json(output_dir / runtime_manifest_name(method))
 
             if report is None and runtime_doc is None:
                 missing_runs.append(run)
@@ -83,8 +77,7 @@ def collect(scan_dir: Path, start: int, end: int) -> dict[str, dict]:
                 if seconds is not None:
                     runtime_values.append(seconds)
 
-        results[method.key] = {
-            "label": method.label,
+        results[method] = {
             "runs_with_map": len(map50_values),
             "runs_with_runtime": len(runtime_values),
             "missing_runs": missing_runs,
@@ -104,18 +97,21 @@ def format_value(value: float | None, digits: int = 4) -> str:
 
 
 def print_report(results: dict[str, dict], start: int, end: int) -> None:
-    print(f"Summary over runs {start}-{end}\n")
-    label_width = max((len(m.label) for m in METHODS), default=24) + 2
+    print(f"Alias experiment summary over runs {start}-{end}\n")
+    if not results:
+        print("No alias_segment directories found in this range.")
+        return
+
+    label_width = max((len(name) for name in results), default=24) + 2
     header = (
         f"{'Method':<{label_width}}{'avg mAP50':<14}{'avg mAP50:95':<16}"
         f"{'avg runtime (s)':<18}{'runs (map/rt)'}"
     )
     print(header)
     print("-" * len(header))
-    for method in METHODS:
-        r = results[method.key]
+    for name, r in results.items():
         print(
-            f"{r['label']:<{label_width}}"
+            f"{name:<{label_width}}"
             f"{format_value(r['avg_mAP50']):<14}"
             f"{format_value(r['avg_mAP50_95']):<16}"
             f"{format_value(r['avg_runtime_seconds'], 2):<18}"
@@ -133,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scan-dir",
         type=Path,
-        default=Path(__file__).resolve().parents[2] / "scan_output",
+        default=Path(__file__).resolve().parents[3] / "scan_output",
         help="directory containing prefix-scoped run_<n> directories",
     )
     parser.add_argument("--output", type=Path, help="optional JSON report path")

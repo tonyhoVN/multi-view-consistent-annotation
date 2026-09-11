@@ -3,7 +3,7 @@
 
 This is the naive vision-only baseline: it deliberately ignores depth, camera
 transforms, neighboring frames, and all propagated masks. Grounding DINO finds
-one box per requested object class in each image, and SAM segments that box.
+boxes for each requested class, and SAM produces the class segmentation.
 Outputs use the same layout as geometric propagation for direct mAP comparison.
 """
 
@@ -17,6 +17,7 @@ import sys
 import time
 from typing import Any, Sequence
 
+import numpy as np
 from PIL import Image
 import torch
 
@@ -32,6 +33,7 @@ from transfer_annotations_test import (
     object_label,
     reset_output_directory,
     resolve_record_path,
+    save_annotation_visualizations,
     save_frame_masks,
     slug,
     synchronize_device,
@@ -165,6 +167,7 @@ def annotate_frame(
     models: VisionModels,
     minimum_mask_pixels: int,
     detection_mode: str,
+    filter_candidates: bool,
 ) -> tuple[list[MaskAnnotation], list[dict[str, Any]]]:
     """Run independent text-box-mask inference for all classes in one frame."""
     image = Image.open(frame.color_path).convert("RGB")
@@ -173,46 +176,46 @@ def annotate_frame(
     labels = [definition.label for definition in objects]
 
     if detection_mode == "zeroshot":
-        # Detect all object classes together, then segment all boxes together.
+        # Detect all object classes together while keeping proposals class-scoped.
         detections_by_class = models.detect_class_boxes(image, labels)
-        selected = []
-        for definition in objects:
-            detections = detections_by_class[definition.label]
-            if not detections:
-                failures.append(
-                    failure_record(
-                        frame, definition, "Grounding DINO found no box"
-                    )
-                )
-                continue
-            box, confidence = max(detections, key=lambda item: item[1])
-            selected.append((definition, confidence, box))
-        masks = models.segment_boxes(image, [item[2] for item in selected])
-        candidates = [
-            (definition, confidence, mask)
-            for (definition, confidence, _), mask in zip(selected, masks)
-        ]
     else:
-        # Detect and segment exactly one object at a time, like text fallback.
-        candidates = []
-        for definition in objects:
-            detections = models.detect_boxes(image, definition.label)
-            if not detections:
-                failures.append(
-                    failure_record(
-                        frame, definition, "Grounding DINO found no box"
-                    )
-                )
-                continue
-            box, confidence = max(detections, key=lambda item: item[1])
-            candidates.append(
-                (definition, confidence, models.segment_box(image, box))
-            )
+        # Multi-shot runs one class-specific DINO query for each object.
+        detections_by_class = {
+            definition.label: models.detect_boxes(image, definition.label)
+            for definition in objects
+        }
 
-    for definition, confidence, raw_mask in candidates:
-        mask = keep_largest_component(raw_mask)
+    for definition in objects:
+        detections = detections_by_class[definition.label]
+        if not detections:
+            failures.append(
+                failure_record(frame, definition, "Grounding DINO found no box")
+            )
+            continue
+
+        # Filter mode preserves the original baseline: keep only the strongest
+        # box, its largest SAM component, and enforce minimum mask area.
+        selected = (
+            [max(detections, key=lambda item: item[1])]
+            if filter_candidates
+            else list(detections)
+        )
+        masks = models.segment_boxes(image, [box for box, _ in selected])
+        if not masks:
+            failures.append(failure_record(frame, definition, "SAM returned no mask"))
+            continue
+        if filter_candidates:
+            mask = keep_largest_component(masks[0])
+            source = "grounding_dino+sam_box_filtered"
+        else:
+            # No-filter mode accepts every detector box for this class and joins
+            # all corresponding SAM regions into one semantic class mask.
+            mask = np.logical_or.reduce(
+                [np.asarray(candidate, dtype=bool) for candidate in masks]
+            )
+            source = "grounding_dino+sam_all_boxes_union"
         area = int(mask.sum())
-        if area < minimum_mask_pixels:
+        if filter_candidates and area < minimum_mask_pixels:
             failures.append(
                 {
                     "path_index": frame.path_index,
@@ -229,8 +232,8 @@ def annotate_frame(
                 prim_path=definition.prim_path,
                 segmentation_id=definition.segmentation_id,
                 mask=mask,
-                source="grounding_dino+sam_box",
-                confidence=float(confidence),
+                source=source,
+                confidence=float(max(score for _, score in selected)),
             )
         )
     return annotations, failures
@@ -253,13 +256,22 @@ def run(args: argparse.Namespace) -> None:
 
     output = args.output_dir
     if output is None:
-        suffix = str(manifest.get("output_suffix", "scan"))
-        output = manifest_path.parent / f"naive_vlm_segment_{suffix}"
+        mode_directory = args.detection_mode.replace("-", "_")
+        output = (
+            manifest_path.parent
+            / "baseline_segment"
+            / (
+                f"naive_vlm_{mode_directory}"
+                if args.filter_candidates
+                else f"naive_vlm_{mode_directory}_no_filter"
+            )
+        )
     output = output.expanduser().resolve()
     reset_output_directory(output)
     camera_frame = str(manifest.get("segmentation_camera_frame", "camera"))
     models = VisionModels(args)
     failures: list[dict[str, Any]] = []
+    annotations_by_path: dict[int, list[MaskAnnotation]] = {}
     synchronize_device(models.device)
     annotation_started = time.perf_counter()
 
@@ -271,8 +283,10 @@ def run(args: argparse.Namespace) -> None:
             models,
             args.minimum_mask_pixels,
             args.detection_mode,
+            args.filter_candidates,
         )
         failures.extend(frame_failures)
+        annotations_by_path[frame.path_index] = annotations
         save_frame_masks(
             output,
             frame,
@@ -290,6 +304,14 @@ def run(args: argparse.Namespace) -> None:
     total_runtime = time.perf_counter() - total_started
     object_frame_count = len(frames) * len(objects)
 
+    # Reuse transfer visualization after timing; baseline annotations have no
+    # point prompts, so the shared renderer draws only masks and boundary boxes.
+    visualization_directory = None
+    if args.save_visualizations:
+        visualization_directory = save_annotation_visualizations(
+            output, frames, annotations_by_path
+        )
+
     summary = {
         "method": "naive_grounding_dino_plus_sam",
         "detection_mode": args.detection_mode,
@@ -302,6 +324,10 @@ def run(args: argparse.Namespace) -> None:
         "box_threshold": args.box_threshold,
         "text_threshold": args.text_threshold,
         "minimum_mask_pixels": args.minimum_mask_pixels,
+        "candidate_filter_enabled": args.filter_candidates,
+        "visualizations": (
+            None if visualization_directory is None else str(visualization_directory)
+        ),
         "runtime": {
             "total_seconds": total_runtime,
             "annotation_seconds": annotation_runtime,
@@ -313,6 +339,7 @@ def run(args: argparse.Namespace) -> None:
             ),
             "includes_model_loading": True,
             "includes_mask_writing": True,
+            "excludes_visualization": True,
             "device": str(models.device),
         },
         "failure_count": len(failures),
@@ -331,7 +358,7 @@ def run(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path, help="scan_output/manifest_<run>.json")
+    parser.add_argument("manifest", type=Path, help="scan_output/<run>/manifest.json")
     parser.add_argument("--route", default="hamilton_2opt")
     parser.add_argument(
         "--detection-mode",
@@ -351,6 +378,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--box-threshold", type=float, default=0.20)
     parser.add_argument("--text-threshold", type=float, default=0.20)
     parser.add_argument("--minimum-mask-pixels", type=int, default=25)
+    parser.add_argument(
+        "--filter-candidates",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "keep only the strongest box and filter its mask; "
+            "--no-filter-candidates unions masks from every returned box"
+        ),
+    )
+    parser.add_argument(
+        "--save-visualizations",
+        action="store_true",
+        help="save mask and boundary-box overlays after runtime measurement",
+    )
     # VisionModels also accepts this field, although this baseline never loads Qwen.
     parser.set_defaults(qwen_model="Qwen/Qwen3-VL-4B-Instruct")
     return parser

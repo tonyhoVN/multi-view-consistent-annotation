@@ -3,10 +3,10 @@
 
 Examples:
     python3 scripts/collect_data/post_process_scan_data.py \
-        scan_output/manifest_run_3.json
+        scan_output/run_3/manifest.json
 
     python3 scripts/collect_data/post_process_scan_data.py \
-        scan_output/manifest_run_3.json --route hamilton_2opt
+        scan_output/run_3/manifest.json --route hamilton_2opt
 """
 
 from __future__ import annotations
@@ -521,7 +521,7 @@ def process_manifest(
         "renumbering": renumbering,
         "artifact_backup": (
             str(artifact_backup.relative_to(manifest_path.parent))
-            if artifact_backup is not None
+            if artifact_backup is not None and create_backup
             else None
         ),
         "route_metrics_recomputed": False,
@@ -549,6 +549,12 @@ def process_manifest(
             if swaps:
                 rollback_directory_swaps(swaps, artifact_backup)
             raise
+
+        # The artifact directory is needed transactionally until the manifest
+        # commits; --no-backup removes it only after that commit succeeds.
+        if artifact_backup is not None and not create_backup:
+            shutil.rmtree(artifact_backup)
+            artifact_backup = None
         print(f"Updated manifest: {manifest_path}")
         if backup_path is not None:
             print(f"Original backup: {backup_path}")
@@ -559,7 +565,7 @@ def process_manifest(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path, help="manifest_<suffix>.json to update")
+    parser.add_argument("manifest", type=Path, help="<run>/manifest.json to update")
     parser.add_argument(
         "--route",
         action="append",
@@ -577,7 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-backup",
         action="store_true",
-        help="do not create the default .json.bak backup",
+        help="do not retain manifest or renamed-artifact backups",
     )
     parser.add_argument(
         "--config",

@@ -33,7 +33,12 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 # Reuse the project's point-cloud conversion rather than maintaining a copy.
-from scene_reconstruction.o3d_process import rgbd_to_pcd_mask
+from scene_reconstruction.o3d_process import (
+    pixels_to_point_cloud,
+    remove_outlier_o3d,
+    rgbd_to_pcd_mask,
+    trim_point_cloud_above_plane,
+)
 
 
 DEFAULT_OBJECTS = (
@@ -81,6 +86,7 @@ class MaskAnnotation:
     mask: np.ndarray
     source: str
     confidence: float = 1.0
+    prompt_point_xy: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -536,6 +542,11 @@ def save_frame_masks(
                 "label": annotation.label,
                 "source": annotation.source,
                 "confidence": float(annotation.confidence),
+                "prompt_point_xy": (
+                    None
+                    if annotation.prompt_point_xy is None
+                    else list(annotation.prompt_point_xy)
+                ),
             }
         )
     record = {
@@ -622,8 +633,17 @@ def create_vlm_seeds(
     return seeds
 
 
-def annotation_from_state(state: ObjectState, source: str) -> MaskAnnotation:
+def annotation_from_state(
+    state: ObjectState,
+    source: str,
+    prompt_point: Sequence[float] | None = None,
+) -> MaskAnnotation:
     """Snapshot mutable tracking state for later per-frame output."""
+    prompt_xy = (
+        None
+        if prompt_point is None
+        else (float(prompt_point[0]), float(prompt_point[1]))
+    )
     return MaskAnnotation(
         label=state.label,
         instance=state.instance,
@@ -631,6 +651,7 @@ def annotation_from_state(state: ObjectState, source: str) -> MaskAnnotation:
         segmentation_id=state.segmentation_id,
         mask=state.mask.copy(),
         source=source,
+        prompt_point_xy=prompt_xy,
     )
 
 
@@ -650,13 +671,83 @@ def text_prompt_mask(
     state: ObjectState,
     image: Image.Image,
     models: VisionModels,
+    prompt_point: Sequence[float],
+    args: argparse.Namespace,
 ) -> np.ndarray | None:
-    """Run class-text Grounding DINO and segment its strongest box with SAM."""
+    """Return the first text candidate passing prompt and area consistency."""
     detections = models.detect_boxes(image, state.label)
     if not detections:
         return None
-    box, _ = max(detections, key=lambda item: item[1])
-    return keep_largest_component(models.segment_box(image, box))
+
+    # Segment every DINO proposal. Confidence alone cannot distinguish another
+    # nearby instance from the object propagated by the geometric prompt.
+    boxes = [box for box, _ in detections]
+    masks = models.segment_boxes(image, boxes)
+    column = int(float(prompt_point[0]))
+    row = int(float(prompt_point[1]))
+    for (_, _confidence), raw_mask in zip(detections, masks):
+        mask = keep_largest_component(raw_mask)
+        height, width = mask.shape
+
+        # Match get_validated_mask_vlm_first: the projected median must fall
+        # inside this candidate and its area must agree with M_best.
+        if not (0 <= column < width and 0 <= row < height):
+            continue
+        if not mask[row, column]:
+            continue
+        if int(mask.sum()) < args.minimum_mask_pixels:
+            continue
+        area_valid, _ = valid_area_ratio(mask, state, args)
+        if area_valid:
+            return mask
+    return None
+
+
+def clean_spatial_cloud(
+    cloud: o3d.geometry.PointCloud, args: argparse.Namespace
+) -> o3d.geometry.PointCloud:
+    """Remove neighbor outliers and points on/below the configured table plane."""
+    filtered, _ = remove_outlier_o3d(
+        cloud,
+        nb_neighbors=args.outlier_neighbors,
+        std_ratio=args.outlier_std_ratio,
+    )
+    return trim_point_cloud_above_plane(
+        filtered,
+        args.table_origin,
+        args.table_z_axis,
+        args.table_clearance,
+    )
+
+
+def get_spatial_drift(
+    reference_cloud: o3d.geometry.PointCloud,
+    prompt_points: np.ndarray,
+    frame: Frame,
+    intrinsics: Intrinsics,
+    args: argparse.Namespace,
+) -> tuple[float, o3d.geometry.PointCloud | None]:
+    """Measure robust pre-segmentation drift using current depth at projected UVs."""
+    depth_map = cv2.imread(str(frame.depth_path), cv2.IMREAD_UNCHANGED)
+    if depth_map is None:
+        return float("inf"), None
+
+    # Reconstruct what the previous object occupies in the current depth view.
+    current_cloud = pixels_to_point_cloud(
+        prompt_points,
+        depth_map,
+        frame.transform,
+        intrinsics.open3d(),
+    )
+    current_cloud = clean_spatial_cloud(current_cloud, args)
+    cleaned_reference = clean_spatial_cloud(reference_cloud, args)
+    if current_cloud.is_empty() or cleaned_reference.is_empty():
+        return float("inf"), None
+
+    distance = float(
+        np.linalg.norm(current_cloud.get_center() - cleaned_reference.get_center())
+    )
+    return distance, current_cloud
 
 
 def propagate_to_frame(
@@ -666,15 +757,34 @@ def propagate_to_frame(
     models: VisionModels,
     intrinsics: Intrinsics,
     args: argparse.Namespace,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, np.ndarray | None]:
     """Apply the paper algorithm once from the prior accepted view to frame t."""
-    # 3DProject + 2DProject: the state cloud is P_prev in the base frame.
+    # --- 1. PROJECT THE PREVIOUS ACCEPTED OBJECT ---
+    # P_prev already lives in the base frame. Project it into candidate frame t.
     pixels = project_cloud(state.point_cloud, frame.transform, intrinsics)
-    if len(pixels) < args.minimum_projected_points:
-        return False, f"only {len(pixels)} projected points"
+    if not len(pixels):
+        return False, "no projected points", None
 
-    # F_fm^point: re-prompt SAM at the robust center of projected geometry.
+    # --- 2. SPATIAL PRE-FILTER ---
+    # Reject weak projections, then back-project their current depths. Statistical
+    # filtering removes isolated depth noise; the user-provided table +Z axis
+    # removes the table plane before the two robust centroids are compared.
+    if not args.no_spatial_filter and len(pixels) < args.minimum_projected_points:
+        return False, f"only {len(pixels)} projected points", None
     prompt_point = np.median(pixels, axis=0)
+    if not args.no_drift_filter:
+        projected_drift, _ = get_spatial_drift(
+            state.point_cloud, pixels, frame, intrinsics, args
+        )
+        if projected_drift > args.maximum_center_distance:
+            return (
+                False,
+                f"projected-depth drift {projected_drift:.4f} m",
+                prompt_point,
+            )
+
+    # --- 3. POINT-PROMPT SEGMENTATION ---
+    # Re-prompt SAM at the median, which is robust to a minority of projected noise.
     mask = keep_largest_component(models.segment_point(image, prompt_point))
     area = int(mask.sum())
     if area < args.minimum_mask_pixels:
@@ -682,36 +792,51 @@ def propagate_to_frame(
     else:
         point_valid, ratio = valid_area_ratio(mask, state, args)
 
-    # F_fm^text: retry with the class name only when the point mask is implausible.
+    # --- 4. TEXT-PROMPT FALLBACK AND AREA VALIDATION ---
+    # Retry with Grounding DINO + SAM only when the point mask is implausible.
     source = "sam_point"
     if not point_valid:
-        text_mask = text_prompt_mask(state, image, models)
+        text_mask = text_prompt_mask(
+            state, image, models, prompt_point, args
+        )
         if text_mask is None:
-            return False, f"point area ratio {ratio:.3f}; text detection failed"
+            return (
+                False,
+                f"point area ratio {ratio:.3f}; text detection failed",
+                prompt_point,
+            )
         mask = text_mask
         area = int(mask.sum())
         text_valid, ratio = valid_area_ratio(mask, state, args)
         if area < args.minimum_mask_pixels or not text_valid:
-            return False, f"text mask area ratio {ratio:.3f} outside limits"
+            return (
+                False,
+                f"text mask area ratio {ratio:.3f} outside limits",
+                prompt_point,
+            )
         source = "dino_text+sam_box"
 
-    # 3DProject current mask, then enforce center(P_prev)-center(P_t) drift.
+    # --- 5. SEGMENTED-CLOUD SPATIAL VALIDATION ---
+    # Clean P_t with the same outlier and table-plane rules used by the pre-filter.
     cloud = cloud_from_mask(frame, mask, intrinsics.open3d())
-    if cloud.is_empty():
-        return False, "segmented depth cloud is empty"
+    cloud = clean_spatial_cloud(cloud, args)
+    reference_cloud = clean_spatial_cloud(state.point_cloud, args)
+    if cloud.is_empty() or reference_cloud.is_empty():
+        return False, "segmented depth cloud is empty after filtering", prompt_point
     center_distance = float(
-        np.linalg.norm(state.point_cloud.get_center() - cloud.get_center())
+        np.linalg.norm(reference_cloud.get_center() - cloud.get_center())
     )
-    if center_distance > args.maximum_center_distance:
-        return False, f"3D center drift {center_distance:.4f} m"
+    if not args.no_drift_filter and center_distance > args.maximum_center_distance:
+        return False, f"3D center drift {center_distance:.4f} m", prompt_point
 
-    # Commit only after all appearance and geometry checks have passed.
+    # --- 6. COMMIT THE ACCEPTED TRACKING STATE ---
+    # A rejected frame never replaces M_prev or its filtered object point cloud.
     state.mask = mask
-    state.point_cloud = cloud
     if area > state.best_area:
+        state.point_cloud = cloud
         state.best_mask = mask.copy()
         state.best_area = area
-    return True, source
+    return True, source, prompt_point
 
 
 def propagate_object(
@@ -729,7 +854,7 @@ def propagate_object(
     # M_prev remains the last accepted state when a candidate frame is rejected.
     for ordinal, frame in enumerate(frames[1:], start=1):
         image = Image.open(frame.color_path).convert("RGB")
-        success, detail = propagate_to_frame(
+        success, detail, prompt_point = propagate_to_frame(
             state, frame, image, models, intrinsics, args
         )
         if not success:
@@ -745,7 +870,9 @@ def propagate_object(
                 f"[{state.label} {ordinal}/{len(frames)-1}] rejected: {detail}"
             )
             continue
-        accepted[frame.path_index] = annotation_from_state(state, detail)
+        accepted[frame.path_index] = annotation_from_state(
+            state, detail, prompt_point
+        )
         print(f"[{state.label} {ordinal}/{len(frames)-1}] accepted via {detail}")
     return accepted, failures
 
@@ -776,6 +903,64 @@ def synchronize_device(device: torch.device) -> None:
     """Finish queued CUDA kernels before reading a wall-clock timestamp."""
     if device.type == "cuda" and torch.cuda.is_available():
         torch.cuda.synchronize(device)
+
+
+def save_annotation_visualizations(
+    output: Path,
+    frames: Sequence[Frame],
+    annotations_by_path: dict[int, list[MaskAnnotation]],
+) -> Path:
+    """Save mask, box, label, and point-prompt overlays on image copies."""
+    visualization_directory = output / "visualizations"
+    visualization_directory.mkdir(parents=True, exist_ok=True)
+    palette = (
+        (40, 40, 255),
+        (40, 220, 40),
+        (255, 120, 20),
+        (220, 40, 220),
+        (20, 220, 220),
+    )
+
+    for frame in frames:
+        original = cv2.imread(str(frame.color_path), cv2.IMREAD_COLOR)
+        if original is None:
+            print(f"Visualization skipped; cannot read {frame.color_path}")
+            continue
+        annotations = annotations_by_path.get(frame.path_index, [])
+
+        # Paint translucent masks on a copy; the captured color image is untouched.
+        mask_layer = original.copy()
+        for index, annotation in enumerate(annotations):
+            color = palette[index % len(palette)]
+            mask_layer[annotation.mask.astype(bool)] = color
+        annotated = cv2.addWeighted(original, 0.60, mask_layer, 0.40, 0.0)
+
+        # Draw each boundary box, label/source, and geometric point prompt last.
+        for index, annotation in enumerate(annotations):
+            color = palette[index % len(palette)]
+            xmin, ymin, xmax, ymax = mask_bounding_box(annotation.mask)
+            cv2.rectangle(annotated, (xmin, ymin), (xmax, ymax), color, 2)
+            cv2.putText(
+                annotated,
+                f"{annotation.label} ({annotation.source})",
+                (xmin, max(18, ymin - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+            if annotation.prompt_point_xy is not None:
+                point = tuple(
+                    int(round(value)) for value in annotation.prompt_point_xy
+                )
+                cv2.circle(annotated, point, 6, (0, 255, 0), -1, cv2.LINE_AA)
+                cv2.circle(annotated, point, 7, (0, 0, 0), 1, cv2.LINE_AA)
+
+        destination = visualization_directory / f"frame_{frame.path_index:05d}.jpg"
+        if not cv2.imwrite(str(destination), annotated):
+            raise OSError(f"failed to save annotation visualization: {destination}")
+    return visualization_directory
 
 
 def run(args: argparse.Namespace) -> None:
@@ -820,8 +1005,7 @@ def run(args: argparse.Namespace) -> None:
 
     output = args.output_dir
     if output is None:
-        suffix = str(manifest.get("output_suffix", "scan"))
-        output = manifest_path.parent / f"transfer_segment_{suffix}"
+        output = manifest_path.parent / "transfer_segment"
     output = output.expanduser().resolve()
     reset_output_directory(output)
     camera_frame = str(manifest.get("segmentation_camera_frame", "camera"))
@@ -861,6 +1045,13 @@ def run(args: argparse.Namespace) -> None:
     annotation_runtime = time.perf_counter() - annotation_started
     total_runtime = time.perf_counter() - total_started
     object_frame_count = len(frames) * len(states)
+
+    # Visualization is deliberately outside both recorded runtime measurements.
+    visualization_directory = None
+    if args.save_visualizations:
+        visualization_directory = save_annotation_visualizations(
+            output, frames, annotations_by_path
+        )
     summary = {
         "source_manifest": str(manifest_path),
         "route": args.route,
@@ -874,7 +1065,17 @@ def run(args: argparse.Namespace) -> None:
             "minimum_area_ratio": args.minimum_area_ratio,
             "maximum_area_ratio": args.maximum_area_ratio,
             "minimum_mask_pixels": args.minimum_mask_pixels,
+            "outlier_neighbors": args.outlier_neighbors,
+            "outlier_std_ratio": args.outlier_std_ratio,
+            "table_origin": list(args.table_origin),
+            "table_z_axis": list(args.table_z_axis),
+            "table_clearance_m": args.table_clearance,
+            "spatial_filter_enabled": not args.no_spatial_filter,
+            "drift_filter_enabled": not args.no_drift_filter,
         },
+        "visualizations": (
+            None if visualization_directory is None else str(visualization_directory)
+        ),
         "failures": failures,
         "runtime": {
             "total_seconds": total_runtime,
@@ -887,6 +1088,7 @@ def run(args: argparse.Namespace) -> None:
             ),
             "includes_model_loading": True,
             "includes_mask_writing": True,
+            "excludes_visualization": True,
             "device": str(models.device),
         },
         "total_time_minutes": round(annotation_runtime / 60, 3),
@@ -903,7 +1105,7 @@ def run(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path, help="scan_output/manifest_<run>.json")
+    parser.add_argument("manifest", type=Path, help="scan_output/<run>/manifest.json")
     parser.add_argument("--route", default="hamilton_2opt")
     parser.add_argument("--seed-source", choices=("auto", "simulation", "vlm"), default="auto")
     parser.add_argument("--objects", nargs="+", help="optional object labels to propagate")
@@ -934,6 +1136,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-area-ratio", type=float, default=0.20)
     parser.add_argument("--maximum-area-ratio", type=float, default=5.0)
     parser.add_argument("--no-area-filter", action="store_true")
+    parser.add_argument(
+        "--table-origin",
+        type=float,
+        nargs=3,
+        default=(0.0, 0.0, -0.10),
+        metavar=("X", "Y", "Z"),
+        help="a point on the table plane in the base frame",
+    )
+    parser.add_argument(
+        "--table-z-axis",
+        type=float,
+        nargs=3,
+        default=(0.0, 0.0, 1.0),
+        metavar=("ZX", "ZY", "ZZ"),
+        help="table-local +Z direction in the base frame",
+    )
+    parser.add_argument(
+        "--table-clearance",
+        type=float,
+        default=0.0,
+        metavar="METERS",
+        help="keep points at least this far above the table plane",
+    )
+    parser.add_argument("--outlier-neighbors", type=int, default=20)
+    parser.add_argument("--outlier-std-ratio", type=float, default=2.0)
+    parser.add_argument("--no-spatial-filter", action="store_true")
+    parser.add_argument("--no-drift-filter", action="store_true")
+    parser.add_argument(
+        "--save-visualizations",
+        action="store_true",
+        help="save annotated color-image copies after runtime measurement",
+    )
     return parser
 
 
@@ -947,6 +1181,18 @@ def main(arguments: Sequence[str] | None = None) -> int:
         raise ValueError("--minimum-mask-pixels must be positive")
     if not 0.0 < args.minimum_area_ratio <= args.maximum_area_ratio:
         raise ValueError("area ratios must be positive and ordered")
+    if args.outlier_neighbors < 1 or args.outlier_std_ratio <= 0.0:
+        raise ValueError("outlier parameters must be positive")
+    table_origin = np.asarray(args.table_origin, dtype=np.float64)
+    table_z_axis = np.asarray(args.table_z_axis, dtype=np.float64)
+    if (
+        not np.all(np.isfinite(table_origin))
+        or not np.all(np.isfinite(table_z_axis))
+        or np.linalg.norm(table_z_axis) < 1e-9
+        or not np.isfinite(args.table_clearance)
+        or args.table_clearance < 0.0
+    ):
+        raise ValueError("table plane parameters must be finite with nonzero Z axis")
     run(args)
     return 0
 

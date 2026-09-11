@@ -55,6 +55,7 @@ from path_planning_single.single_path_planner import (  # noqa: E402
     validate_configuration,
 )
 from robot_api import RobotAPI, RobotAPIError  # noqa: E402
+from scan_layout import ScanRunLayout  # noqa: E402
 
 
 TRAJECTORY_MODES = ("random", "spiral", "hamilton_2opt")
@@ -175,12 +176,12 @@ def validate_scan_configuration(config: argparse.Namespace) -> None:
 def output_directories(
     config: argparse.Namespace, manifest_path: Path | None = None
 ) -> dict[str, Path]:
-    """Clear and recreate only the three suffix-scoped output directories."""
-    root = config.output_dir.expanduser().resolve()
+    """Clear and recreate scan artifacts inside the prefix-scoped run folder."""
+    layout = ScanRunLayout(config.output_dir, config.output_suffix)
     directories = {
-        "images": root / f"save_images_{config.output_suffix}",
-        "segments": root / f"save_segment_{config.output_suffix}",
-        "transforms": root / f"save_TF_{config.output_suffix}",
+        "images": layout.images,
+        "segments": layout.segments,
+        "transforms": layout.transforms,
     }
 
     # Validate every exact target before removing any data from a previous run.
@@ -455,8 +456,9 @@ def capture_view(
 def run_scan(config: argparse.Namespace) -> None:
     """Execute the selected reachable route and save synchronized scan products."""
     validate_scan_configuration(config)
-    output_root = config.output_dir.expanduser().resolve()
-    manifest_path = output_root / f"manifest_{config.output_suffix}.json"
+    layout = ScanRunLayout(config.output_dir, config.output_suffix)
+    output_root = layout.root
+    manifest_path = layout.manifest
     directories = output_directories(config, manifest_path)
     clear_previous_manifest(manifest_path)
 

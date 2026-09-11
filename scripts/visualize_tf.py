@@ -36,10 +36,12 @@ def load_tf_matrices(directory):
 
 
 def infer_manifest_path(directory):
-    """Infer manifest_<suffix>.json from a save_TF_<suffix> directory."""
+    """Infer a canonical or legacy manifest from a transform directory."""
     directory = Path(directory).expanduser().resolve()
     match = re.fullmatch(r"save_TF_(.+)", directory.name)
     candidates = []
+    if directory.name == "save_TF":
+        candidates.append(directory.parent / "manifest.json")
     if match:
         candidates.append(directory.parent / f"manifest_{match.group(1)}.json")
     candidates.append(directory.parent / "manifest_run.json")
@@ -172,7 +174,7 @@ def plot_frames(
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "directory", nargs="?", default="scan_output/save_TF_run1", help="directory with .npy TF matrices"
+        "directory", nargs="?", default="scan_output/run_1/save_TF", help="directory with .npy TF matrices"
     )
     parser.add_argument("--max-frames", type=int, default=None, help="limit number of frames plotted")
     parser.add_argument("--axis-len", type=float, default=0.05, help="length of drawn axes")
@@ -182,7 +184,7 @@ def main():
         default=None,
         help=(
             "scan manifest containing routes.hamilton_2opt; by default infer "
-            "manifest_<suffix>.json from the TF directory name"
+            "<run>/manifest.json (legacy names are also supported)"
         ),
     )
     parser.add_argument("--save", type=str, default=None, help="path to save figure instead of showing")

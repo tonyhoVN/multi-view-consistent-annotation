@@ -19,6 +19,12 @@ import threading
 import time
 from typing import Sequence
 
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from scan_layout import ScanRunLayout  # noqa: E402
+
 
 ISAAC_READY = (
     "[segmentation_service] Ready: /save_object_segmentations; camera frames: "
@@ -326,7 +332,9 @@ def validate_paths(paths: CollectionPaths) -> None:
         raise FileNotFoundError("missing required files:\n  " + "\n  ".join(missing))
 
 
-def commands(paths: CollectionPaths, robot_ip: str, suffix: str) -> dict[str, str]:
+def commands(
+    paths: CollectionPaths, robot_ip: str, suffix: str, scan_output_dir: Path
+) -> dict[str, str]:
     """Build the four commands in the exact required environment order."""
     ros = shell_source(Path("/opt/ros/humble/setup.bash"))
     kinova = shell_source(paths.kinova_setup)
@@ -358,7 +366,8 @@ def commands(paths: CollectionPaths, robot_ip: str, suffix: str) -> dict[str, st
         "scan": (
             f"set -e; {ros}; {kinova}; cd {shlex.quote(str(paths.repository))}; "
             f"exec python3 {shlex.quote(str(paths.scanner))} --use-sim-time "
-            f"--output-suffix {shlex.quote(suffix)}"
+            f"--output-suffix {shlex.quote(suffix)} "
+            f"--output-dir {shlex.quote(str(scan_output_dir))}"
         ),
     }
 
@@ -366,8 +375,10 @@ def commands(paths: CollectionPaths, robot_ip: str, suffix: str) -> dict[str, st
 def run_once(args: argparse.Namespace, paths: CollectionPaths, run_number: int) -> dict:
     """Launch one complete four-stage collection and always tear it down."""
     suffix = f"{args.output_prefix}_{run_number}"
-    log_directory = paths.repository / args.log_directory / suffix
-    run_commands = commands(paths, args.robot_ip, suffix)
+    scan_output_dir = (paths.repository / args.scan_output_dir).resolve()
+    layout = ScanRunLayout(scan_output_dir, suffix)
+    log_directory = layout.collection_log
+    run_commands = commands(paths, args.robot_ip, suffix, scan_output_dir)
     active: list[ManagedProcess] = []
     started_at = datetime.now(timezone.utc)
     status = "failed"
@@ -468,7 +479,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kinova-workspace", type=Path, default=Path("~/Projects/kinova_ws"))
     parser.add_argument("--isaac-project", type=Path, default=Path("~/Projects/kinova_isaacsim"))
     parser.add_argument("--isaac-ros-setup", type=Path, default=Path("~/isaac_ros.sh"))
-    parser.add_argument("--log-directory", type=Path, default=Path("scan_output/collection_logs"))
+    parser.add_argument(
+        "--scan-output-dir",
+        type=Path,
+        default=Path("scan_output"),
+        help="root containing one prefix-scoped directory per run",
+    )
     parser.add_argument("--isaac-timeout", type=float, default=30.0)
     parser.add_argument("--moveit-timeout", type=float, default=30.0)
     parser.add_argument("--motion-timeout", type=float, default=30.0)
@@ -513,7 +529,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         for run_number in range(args.start_run, args.start_run + args.runs):
             suffix = f"{args.output_prefix}_{run_number}"
             print(f"Run {run_number} ({suffix}):")
-            for terminal, command in commands(paths, args.robot_ip, suffix).items():
+            scan_output_dir = (paths.repository / args.scan_output_dir).resolve()
+            for terminal, command in commands(
+                paths, args.robot_ip, suffix, scan_output_dir
+            ).items():
                 print(f"  {terminal}: {command}")
         return 0
 
