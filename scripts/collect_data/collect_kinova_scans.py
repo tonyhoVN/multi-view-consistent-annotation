@@ -121,6 +121,11 @@ class ManagedProcess:
     def poll(self) -> int | None:
         return None if self.process is None else self.process.poll()
 
+    def output_snapshot(self) -> tuple[str, ...]:
+        """Return a thread-safe copy of the process's recent output."""
+        with self._condition:
+            return tuple(self._lines)
+
     def wait(self) -> int:
         if self.process is None:
             raise RuntimeError(f"{self.name} was not started")
@@ -240,17 +245,36 @@ def wait_for_active_controllers(
 ) -> None:
     """Wait until ros2_control reports every required controller as active."""
     deadline = time.monotonic() + timeout
+    ansi_escape = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
     command = (
         f"{shell_source(Path('/opt/ros/humble/setup.bash'))} && "
         f"{shell_source(kinova_setup)} && ROS2CLI_NO_DAEMON=1 "
         "ros2 control list_controllers --controller-manager /controller_manager"
     )
+    last_diagnostic = "controller probe was not executed"
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(
                 f"{process.name} exited before ros2_control became ready; "
                 f"see {process.log_path}"
             )
+
+        # The spawners belong to this launch, so their success messages cannot
+        # be confused with a stale controller manager left in the DDS graph.
+        clean_process_output = tuple(
+            ansi_escape.sub("", line) for line in process.output_snapshot()
+        )
+        activated_by_spawner = {
+            name
+            for name in controller_names
+            if any(
+                "Configured and activated" in line and name in line
+                for line in clean_process_output
+            )
+        }
+        if set(controller_names).issubset(activated_by_spawner):
+            return
+
         try:
             result = subprocess.run(
                 ["/bin/bash", "--noprofile", "--norc", "-c", command],
@@ -259,20 +283,32 @@ def wait_for_active_controllers(
                 timeout=6.0,
                 check=False,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exception:
             result = None
+            last_diagnostic = f"probe command timed out after {exception.timeout}s"
         if result is not None and result.returncode == 0:
+            clean_stdout = ansi_escape.sub("", result.stdout)
             active = {
                 line.split()[0]
-                for line in result.stdout.splitlines()
-                if line.split() and line.split()[-1] == "active"
+                for line in clean_stdout.splitlines()
+                if line.split() and line.split()[-1].strip("[]") == "active"
             }
             if set(controller_names).issubset(active):
                 return
+            last_diagnostic = (
+                f"probe reported active={sorted(active)!r}; "
+                f"stdout={clean_stdout.strip()!r}"
+            )
+        elif result is not None:
+            last_diagnostic = (
+                f"probe exited with code {result.returncode}; "
+                f"stderr={result.stderr.strip()!r}"
+            )
         time.sleep(1.0)
     names = ", ".join(controller_names)
     raise TimeoutError(
-        f"timed out waiting for active controller(s) {names}; see {process.log_path}"
+        f"timed out waiting for active controller(s) {names}; "
+        f"last probe: {last_diagnostic}; see {process.log_path}"
     )
 
 
@@ -309,7 +345,7 @@ def commands(paths: CollectionPaths, robot_ip: str, suffix: str) -> dict[str, st
         ),
         "moveit": (
             f"set -e; {ros}; {kinova}; exec ros2 launch "
-            "kinova_gen3_7dof_robotiq_2f_85_moveit_config robot.launch.py "
+            "kinova_vision_moveit_config robot.launch.py "
             f"robot_ip:={shlex.quote(robot_ip)} isaac_sim:=true launch_rviz:=false"
         ),
         "motion": (
@@ -348,7 +384,6 @@ def run_once(args: argparse.Namespace, paths: CollectionPaths, run_number: int) 
         active.append(isaac)
         isaac.start()
         isaac.wait_for_output(ISAAC_READY, args.isaac_timeout)
-        time.sleep(3.0)  # allow Isaac to finish its own startup before MoveIt
 
         # Terminal 2: /compute_ik proves MoveIt's kinematics service is discoverable.
         moveit = ManagedProcess(
@@ -370,7 +405,6 @@ def run_once(args: argparse.Namespace, paths: CollectionPaths, run_number: int) 
             args.moveit_timeout,
         )
         wait_for_joint_state(moveit, paths.kinova_setup, args.moveit_timeout)
-        time.sleep(3.0)  # allow MoveIt to finish its own startup before motion-server
 
         # Terminal 3: wait for the RobotAPI Cartesian service before scanning.
         motion = ManagedProcess(
@@ -385,7 +419,6 @@ def run_once(args: argparse.Namespace, paths: CollectionPaths, run_number: int) 
             paths.kinova_setup,
             args.motion_timeout,
         )
-        time.sleep(3.0)  # allow motion-server to finish its own startup before scanning
 
         # Terminal 4 is finite; its exit code determines collection success.
         scan = ManagedProcess("scan", run_commands["scan"], log_directory / "scan.log")
@@ -436,9 +469,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--isaac-project", type=Path, default=Path("~/Projects/kinova_isaacsim"))
     parser.add_argument("--isaac-ros-setup", type=Path, default=Path("~/isaac_ros.sh"))
     parser.add_argument("--log-directory", type=Path, default=Path("scan_output/collection_logs"))
-    parser.add_argument("--isaac-timeout", type=float, default=300.0)
-    parser.add_argument("--moveit-timeout", type=float, default=180.0)
-    parser.add_argument("--motion-timeout", type=float, default=120.0)
+    parser.add_argument("--isaac-timeout", type=float, default=30.0)
+    parser.add_argument("--moveit-timeout", type=float, default=30.0)
+    parser.add_argument("--motion-timeout", type=float, default=30.0)
     parser.add_argument("--shutdown-timeout", type=float, default=30.0)
     parser.add_argument("--restart-delay", type=float, default=5.0)
     parser.add_argument("--stop-on-error", action="store_true")
