@@ -248,10 +248,13 @@ conda run --no-capture-output -n vla \
 ```
 
 The evaluator reports standard mask mAP at IoU 0.50 and the mean over IoU
-thresholds 0.50:0.05:0.95. AP is calculated independently for every object
-class and macro-averaged across all classes present in ground truth. Missing
-predictions count as false negatives. Prediction confidence is read from
-`confidence` or `score`; transferred masks without either field use 1.0.
+thresholds 0.50:0.05:0.95. By default, it evaluates only object classes visible
+in the first route capture (normally Ready view/sample 0), matching the class
+set given to the naive baseline. AP is calculated independently for those
+classes over the full route and macro-averaged. Use `--objects` for an explicit
+subset. Missing predictions count as false negatives. Prediction confidence is
+read from `confidence` or `score`; transferred masks without either field use
+1.0.
 
 ## Evaluation-only batch run
 

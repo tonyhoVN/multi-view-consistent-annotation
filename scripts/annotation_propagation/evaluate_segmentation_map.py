@@ -98,6 +98,38 @@ def route_captures(
     return ordered
 
 
+def first_view_classes(
+    scan_manifest_path: Path, captures: Sequence[dict[str, Any]]
+) -> set[str]:
+    """Return canonical object classes visible in the first route capture."""
+    first_capture = captures[0]
+    sample_index = int(first_capture["sample_index"])
+    segmentation = first_capture.get("segmentation")
+    if not isinstance(segmentation, dict) or segmentation.get("status") != "saved":
+        raise ValueError(
+            f"first route capture (sample {sample_index}) has no saved segmentation"
+        )
+    manifest_value = segmentation.get("manifest")
+    if not isinstance(manifest_value, str):
+        raise ValueError(
+            f"first route capture (sample {sample_index}) has no segmentation manifest"
+        )
+
+    segmentation_path = resolve_path(manifest_value, scan_manifest_path.parent)
+    document = read_json(segmentation_path)
+    classes = {
+        label_from_object(item)
+        for item in document.get("objects", [])
+        if isinstance(item, dict)
+    }
+    classes.discard("")
+    if not classes:
+        raise ValueError(
+            f"first-view segmentation contains no object classes: {segmentation_path}"
+        )
+    return classes
+
+
 def records_from_segmentation_manifest(
     segmentation_manifest: Path,
     frame_key: int,
@@ -377,8 +409,22 @@ def main(arguments: Sequence[str] | None = None) -> int:
     manifest_path = args.manifest.expanduser().resolve()
     scan_manifest = read_json(manifest_path)
     captures = route_captures(scan_manifest, args.route)
-    selected = (
-        {normalized_label(value) for value in args.objects} if args.objects else None
+    initial_classes = first_view_classes(manifest_path, captures)
+    if args.objects:
+        selected = {normalized_label(value) for value in args.objects}
+        unavailable = selected - initial_classes
+        if unavailable:
+            raise ValueError(
+                "--objects must be a subset of first-view classes; unavailable: "
+                + ", ".join(sorted(unavailable))
+            )
+        selection_source = "explicit_objects"
+    else:
+        selected = initial_classes
+        selection_source = "first_route_capture_segmentation"
+    print(
+        "Evaluating classes selected from "
+        f"{selection_source}: {', '.join(sorted(selected))}"
     )
     prediction_root = args.predictions
     if prediction_root is None:
@@ -402,6 +448,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 prediction_root, record_directory
             ),
             "route": args.route,
+            "evaluated_objects": sorted(selected),
+            "object_selection_source": selection_source,
+            "first_view_sample_index": int(captures[0]["sample_index"]),
             "iou_thresholds": [float(value) for value in IOU_THRESHOLDS],
             "default_prediction_confidence": 1.0,
         }
