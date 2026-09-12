@@ -38,6 +38,7 @@ from path_planning_single.planning import (  # noqa: E402
     pairwise_overlaps,
     sample_hemisphere,
 )
+from scan_layout import serialized_relative_path  # noqa: E402
 
 from geometry_msgs.msg import Point, Pose, PoseStamped  # noqa: E402
 from moveit_msgs.msg import DisplayTrajectory, MoveItErrorCodes  # noqa: E402
@@ -625,8 +626,11 @@ def run(config: argparse.Namespace) -> None:
                 }
             )
 
+        result_path = Path(config.result_json).expanduser().resolve()
         result = {
-            "configuration": str(config.config.expanduser().resolve()),
+            "configuration": serialized_relative_path(
+                config.config, result_path.parent
+            ),
             "motion_executed": False,
             "trajectory_mode": config.trajectory_mode,
             "selected_trajectories": (
@@ -658,7 +662,6 @@ def run(config: argparse.Namespace) -> None:
                 "nearest_neighbor_seed_metrics": asdict(greedy_metrics),
             },
         }
-        result_path = Path(config.result_json).expanduser().resolve()
         result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
         # Select one experimental route or publish the complete paper comparison.

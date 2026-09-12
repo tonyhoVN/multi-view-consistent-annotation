@@ -80,6 +80,23 @@ python3 scripts/collect_data/migrate_scan_layout.py 1 24 --dry-run
 python3 scripts/collect_data/migrate_scan_layout.py 1 24
 ```
 
+Convert repository-absolute paths already stored in JSON manifests and reports
+to paths relative to each JSON file. Preview first, then apply the same range:
+
+```bash
+conda run --no-capture-output -n vla \
+  python scripts/collect_data/relativize_saved_paths.py 1 24 \
+  --dry-run --verbose
+
+conda run --no-capture-output -n vla \
+  python scripts/collect_data/relativize_saved_paths.py 1 24
+```
+
+Only complete absolute paths below this repository are changed. Relative paths,
+Isaac prim paths such as `/World/...`, URLs, and external ROS/workspace paths
+remain untouched. Add `--backup` to retain every changed source JSON as
+`<name>.json.absolute-paths.bak`.
+
 By default, a failed run is shut down and the next run is attempted. Add
 `--stop-on-error` to stop after the first failure. Inspect commands without
 starting Isaac Sim or ROS:

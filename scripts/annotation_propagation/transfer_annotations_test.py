@@ -39,6 +39,7 @@ from scene_reconstruction.o3d_process import (
     rgbd_to_pcd_mask,
     trim_point_cloud_above_plane,
 )
+from scan_layout import resolve_saved_path, serialized_relative_path  # noqa: E402
 
 
 DEFAULT_OBJECTS = (
@@ -108,8 +109,7 @@ class Intrinsics:
 
 def resolve_record_path(value: str, manifest_path: Path) -> Path:
     """Resolve a path stored relative to the scan manifest directory."""
-    path = Path(value).expanduser()
-    return path if path.is_absolute() else manifest_path.parent / path
+    return resolve_saved_path(value, manifest_path.parent)
 
 
 def load_scan_manifest(path: Path) -> dict[str, Any]:
@@ -1053,10 +1053,10 @@ def run(args: argparse.Namespace) -> None:
             output, frames, annotations_by_path
         )
     summary = {
-        "source_manifest": str(manifest_path),
+        "source_manifest": serialized_relative_path(manifest_path, output),
         "route": args.route,
         "seed_source": seed_source,
-        "camera_yaml": str(camera_yaml),
+        "camera_yaml": serialized_relative_path(camera_yaml, output),
         "frame_count": len(frames),
         "objects": labels,
         "criteria": {
@@ -1074,7 +1074,9 @@ def run(args: argparse.Namespace) -> None:
             "drift_filter_enabled": not args.no_drift_filter,
         },
         "visualizations": (
-            None if visualization_directory is None else str(visualization_directory)
+            None
+            if visualization_directory is None
+            else serialized_relative_path(visualization_directory, output)
         ),
         "failures": failures,
         "runtime": {

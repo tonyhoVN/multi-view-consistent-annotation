@@ -23,7 +23,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from scan_layout import ScanRunLayout  # noqa: E402
+from scan_layout import ScanRunLayout, serialized_relative_path  # noqa: E402
 
 
 ISAAC_READY = (
@@ -460,7 +460,7 @@ def run_once(args: argparse.Namespace, paths: CollectionPaths, run_number: int) 
         "error": error,
         "started_at": started_at.isoformat(),
         "finished_at": datetime.now(timezone.utc).isoformat(),
-        "log_directory": str(log_directory),
+        "log_directory": serialized_relative_path(log_directory, log_directory),
     }
     log_directory.mkdir(parents=True, exist_ok=True)
     (log_directory / "run.json").write_text(

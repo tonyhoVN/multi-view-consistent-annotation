@@ -100,7 +100,7 @@ def annotation_arguments(args: argparse.Namespace, output: Path) -> list[str]:
     if args.save_visualizations:
         common.append("--save-visualizations")
     if args.method == "transfer":
-        return [
+        transfer_arguments = [
             *common,
             "--table-origin",
             *map(str, args.table_origin),
@@ -119,6 +119,9 @@ def annotation_arguments(args: argparse.Namespace, output: Path) -> list[str]:
             "--maximum-area-ratio",
             str(args.maximum_area_ratio),
         ]
+        if args.camera_yaml is not None:
+            transfer_arguments.extend(["--camera-yaml", str(args.camera_yaml)])
+        return transfer_arguments
     mode = "zeroshot" if args.method.endswith("zeroshot") else "multi-shot"
     baseline = [*common, "--detection-mode", mode]
     if not args.filter_candidates:
@@ -133,7 +136,9 @@ def record_alias_metadata(
     name = "transfer_manifest.json" if method == "transfer" else "naive_vlm_manifest.json"
     path = output / name
     document = json.loads(path.read_text(encoding="utf-8"))
-    document["grounding_dino_alias_config"] = str(alias_path.resolve())
+    document["grounding_dino_alias_config"] = transfer.serialized_relative_path(
+        alias_path, path.parent
+    )
     document["grounding_dino_aliases"] = aliases
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
@@ -200,6 +205,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--maximum-center-distance", type=float, default=0.1)
     parser.add_argument("--minimum-area-ratio", type=float, default=0.2)
     parser.add_argument("--maximum-area-ratio", type=float, default=2.5)
+    parser.add_argument(
+        "--camera-yaml",
+        type=Path,
+        help="override camera calibration when the scan config references another host",
+    )
     return parser
 
 

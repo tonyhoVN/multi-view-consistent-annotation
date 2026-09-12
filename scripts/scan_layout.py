@@ -4,11 +4,46 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 
 
 SAFE_RUN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
+def serialized_relative_path(path: Path, base: Path) -> str:
+    """Return a portable path relative to the directory owning a saved record."""
+    target = path.expanduser().resolve()
+    owner = base.expanduser().resolve()
+    return Path(os.path.relpath(target, owner)).as_posix()
+
+
+def resolve_saved_path(
+    value: str, record_directory: Path, repository_root: Path | None = None
+) -> Path:
+    """Resolve relative paths and rebase missing paths from an older checkout."""
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        return (record_directory / path).resolve()
+    if path.exists():
+        return path
+
+    # Legacy manifests may name another machine's repository. Rebase only
+    # recognizable repository-owned trees; external absolute paths stay intact.
+    current_root = (
+        Path(__file__).resolve().parents[1]
+        if repository_root is None
+        else repository_root.expanduser().resolve()
+    )
+    for marker in ("scripts", "scan_output", "config", "docs"):
+        if marker not in path.parts:
+            continue
+        marker_index = path.parts.index(marker)
+        candidate = current_root.joinpath(*path.parts[marker_index:])
+        if candidate.exists():
+            return candidate
+    return path
 
 
 @dataclass(frozen=True)
