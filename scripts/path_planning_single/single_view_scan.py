@@ -55,7 +55,7 @@ from path_planning_single.single_path_planner import (  # noqa: E402
     validate_configuration,
 )
 from robot_api import RobotAPI, RobotAPIError  # noqa: E402
-from scan_layout import ScanRunLayout  # noqa: E402
+from scan_layout import ScanRunLayout, serialized_relative_path  # noqa: E402
 
 
 TRAJECTORY_MODES = ("random", "spiral", "hamilton_2opt")
@@ -504,7 +504,7 @@ def run_scan(config: argparse.Namespace) -> None:
         reachable = plan["reachable"]
         selected_order = plan["orders"][config.trajectory_mode]
         manifest = {
-            "configuration": str(config.config.expanduser().resolve()),
+            "configuration": serialized_relative_path(config.config, output_root),
             "output_suffix": config.output_suffix,
             "trajectory_mode": config.trajectory_mode,
             "path_start_mode": config.path_start_mode,

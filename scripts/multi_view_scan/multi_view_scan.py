@@ -41,6 +41,7 @@ from multi_view_scan.isaac_segmentation import (  # noqa: E402
     SegmentationServiceError,
 )
 from robot_api import RobotAPI, RobotAPIError  # noqa: E402
+from scan_layout import serialized_relative_path  # noqa: E402
 from multi_view_scan.scan_trajectory import (  # noqa: E402
     CameraIntrinsics,
     ReachableViewpoint,
@@ -820,7 +821,7 @@ def run_scan(args: argparse.Namespace) -> None:
     manifest_path = output_dir / "manifest.json"
 
     manifest = {
-        "configuration_file": str(args.config.expanduser().resolve()),
+        "configuration_file": serialized_relative_path(args.config, output_dir),
         "world_frame": args.world_frame,
         "center_xyz": center.tolist(),
         "radius": args.radius,
@@ -830,7 +831,7 @@ def run_scan(args: argparse.Namespace) -> None:
         "right_camera_local_z_rotation_deg": 90.0,
         "use_sim_time": args.use_sim_time,
         "steps_directory": str(steps_dir.relative_to(output_dir)),
-        "camera_calibration": str(args.camera_yaml.expanduser().resolve()),
+        "camera_calibration": serialized_relative_path(args.camera_yaml, output_dir),
         "camera_intrinsics": asdict(intrinsics),
         "simulation_segmentation": {
             "enabled": args.robot_mode == "simulation",

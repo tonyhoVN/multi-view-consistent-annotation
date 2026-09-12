@@ -11,10 +11,19 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from collect_data.migrate_scan_layout import migrate_run
-from scan_layout import ScanRunLayout
+from scan_layout import ScanRunLayout, serialized_relative_path
 
 
 class ScanLayoutTests(unittest.TestCase):
+    def test_serialized_path_is_relative_to_record_directory(self) -> None:
+        self.assertEqual(
+            serialized_relative_path(
+                Path("/tmp/project/scripts/config.yaml"),
+                Path("/tmp/project/scan_output/run_3"),
+            ),
+            "../../scripts/config.yaml",
+        )
+
     def test_layout_places_every_artifact_under_run(self) -> None:
         layout = ScanRunLayout(Path("/tmp/scans"), "run_7")
         self.assertEqual(layout.manifest, Path("/tmp/scans/run_7/manifest.json"))

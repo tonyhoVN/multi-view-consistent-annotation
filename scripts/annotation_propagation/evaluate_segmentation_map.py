@@ -15,10 +15,17 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any, Iterable, Sequence
 
 import cv2
 import numpy as np
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from scan_layout import serialized_relative_path  # noqa: E402
 
 
 IOU_THRESHOLDS = np.arange(0.50, 0.951, 0.05)
@@ -385,18 +392,23 @@ def main(arguments: Sequence[str] | None = None) -> int:
     )
     predictions = load_predictions(prediction_root, captures, selected)
     report = evaluate(ground_truth, predictions)
+    output = args.output.expanduser().resolve() if args.output else None
+    record_directory = output.parent if output is not None else manifest_path.parent
     report.update(
         {
-            "scan_manifest": str(manifest_path),
-            "prediction_root": str(prediction_root),
+            "scan_manifest": serialized_relative_path(
+                manifest_path, record_directory
+            ),
+            "prediction_root": serialized_relative_path(
+                prediction_root, record_directory
+            ),
             "route": args.route,
             "iou_thresholds": [float(value) for value in IOU_THRESHOLDS],
             "default_prediction_confidence": 1.0,
         }
     )
     print_report(report)
-    if args.output:
-        output = args.output.expanduser().resolve()
+    if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Saved detailed report: {output}")

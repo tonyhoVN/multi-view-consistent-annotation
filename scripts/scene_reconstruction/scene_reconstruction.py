@@ -28,6 +28,7 @@ from multi_view_scan.aux_math import (  # noqa: E402
     matrix_from_pose,
     transform_from_euler,
 )
+from scan_layout import serialized_relative_path  # noqa: E402
 
 
 DEFAULT_CAMERA_YAML = Path(
@@ -339,13 +340,16 @@ def main() -> None:
     if not o3d.io.write_point_cloud(str(output_path), cloud):
         raise RuntimeError(f"failed to write point cloud: {output_path}")
 
+    metadata_path = output_path.with_suffix(".json")
     metadata = {
-        "point_cloud": str(output_path),
+        "point_cloud": serialized_relative_path(output_path, metadata_path.parent),
         "point_count": len(cloud.points),
         "view_count": len(views),
         "world_frame": manifest.get("world_frame", "world"),
         "pose_source": args.pose_source,
-        "camera_yaml": str(calibration_path),
+        "camera_yaml": serialized_relative_path(
+            calibration_path, metadata_path.parent
+        ),
         "intrinsics": vars(intrinsics),
         "camera_frame_ids": camera_frame_ids,
         "yaml_hand_from_camera_mount": {
@@ -364,7 +368,6 @@ def main() -> None:
             for view in views
         ],
     }
-    metadata_path = output_path.with_suffix(".json")
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     print(f"Saved reconstructed scene: {output_path}")
     print(f"Saved reconstruction metadata: {metadata_path}")

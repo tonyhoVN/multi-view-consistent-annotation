@@ -4,11 +4,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 
 
 SAFE_RUN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
+def serialized_relative_path(path: Path, base: Path) -> str:
+    """Return a portable path relative to the directory owning a saved record."""
+    target = path.expanduser().resolve()
+    owner = base.expanduser().resolve()
+    return Path(os.path.relpath(target, owner)).as_posix()
 
 
 @dataclass(frozen=True)

@@ -133,7 +133,9 @@ def record_alias_metadata(
     name = "transfer_manifest.json" if method == "transfer" else "naive_vlm_manifest.json"
     path = output / name
     document = json.loads(path.read_text(encoding="utf-8"))
-    document["grounding_dino_alias_config"] = str(alias_path.resolve())
+    document["grounding_dino_alias_config"] = transfer.serialized_relative_path(
+        alias_path, path.parent
+    )
     document["grounding_dino_aliases"] = aliases
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 

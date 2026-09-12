@@ -35,6 +35,7 @@ from transfer_annotations_test import (
     resolve_record_path,
     save_annotation_visualizations,
     save_frame_masks,
+    serialized_relative_path,
     slug,
     synchronize_device,
 )
@@ -315,7 +316,7 @@ def run(args: argparse.Namespace) -> None:
     summary = {
         "method": "naive_grounding_dino_plus_sam",
         "detection_mode": args.detection_mode,
-        "source_manifest": str(manifest_path),
+        "source_manifest": serialized_relative_path(manifest_path, output),
         "route": args.route,
         "frame_count": len(frames),
         "objects": [asdict(definition) for definition in objects],
@@ -326,7 +327,9 @@ def run(args: argparse.Namespace) -> None:
         "minimum_mask_pixels": args.minimum_mask_pixels,
         "candidate_filter_enabled": args.filter_candidates,
         "visualizations": (
-            None if visualization_directory is None else str(visualization_directory)
+            None
+            if visualization_directory is None
+            else serialized_relative_path(visualization_directory, output)
         ),
         "runtime": {
             "total_seconds": total_runtime,
