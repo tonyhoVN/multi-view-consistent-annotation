@@ -191,6 +191,34 @@ The two no-filter baselines use directories ending in `_no_filter`, so this
 command does not overwrite the filtered alias results. The transfer method is
 unaffected by this baseline-only option.
 
+### Evaluation-only batch run for the alias experiment
+
+`run_all_evaluations_alias.sh` only re-evaluates alias predictions that
+already exist — it does not run transfer propagation or naive VLM
+annotation. Use it to re-score a range of runs after alias generation has
+already completed:
+
+```bash
+scripts/annotation_propagation/alias_experiment/run_all_evaluations_alias.sh [start] [end] [--stop-on-error]
+```
+
+`start`/`end` default to `1`/`24`. For each run `<n>` it evaluates whichever
+of these prediction directories exist under `scan_output/run_<n>/alias_segment/`:
+
+```text
+transfer_segment
+naive_vlm_zeroshot
+naive_vlm_multi_shot
+naive_vlm_zeroshot_no_filter
+naive_vlm_multi_shot_no_filter
+```
+
+writing each `map_report.json` in place. A missing manifest is logged and
+skipped; a missing prediction directory for one method is skipped without
+failing the run (not every run has every method generated). Pass
+`--stop-on-error` to halt on the first evaluation failure instead of
+continuing through the range.
+
 Use `--aliases path/to/aliases.yaml` to test a different mapping, or run only
 one method directly (still inside the required Conda environment):
 
