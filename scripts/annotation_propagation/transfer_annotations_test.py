@@ -266,6 +266,13 @@ class VisionModels:
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
+        self.args.sam_backend = getattr(self.args, "sam_backend", "sam1")
+        if getattr(self.args, "sam_model", None) is None:
+            self.args.sam_model = (
+                "facebook/sam2.1-hiera-large"
+                if self.args.sam_backend == "sam2"
+                else "facebook/sam-vit-base"
+            )
         self.device = torch.device(args.device)
         self._dino_processor = None
         self._dino_model = None
@@ -277,11 +284,20 @@ class VisionModels:
     def _load_sam(self) -> None:
         if self._sam_model is not None:
             return
-        from transformers import SamModel, SamProcessor
 
-        print(f"Loading SAM: {self.args.sam_model}")
-        self._sam_processor = SamProcessor.from_pretrained(self.args.sam_model)
-        self._sam_model = SamModel.from_pretrained(self.args.sam_model)
+        # SAM 1 and SAM 2 expose the same prompt/post-processing interface in
+        # Transformers, so the propagation logic can stay backend-independent.
+        backend = getattr(self.args, "sam_backend", "sam1")
+        if backend == "sam2":
+            from transformers import Sam2Model as ModelClass
+            from transformers import Sam2Processor as ProcessorClass
+        else:
+            from transformers import SamModel as ModelClass
+            from transformers import SamProcessor as ProcessorClass
+
+        print(f"Loading {backend.upper()}: {self.args.sam_model}")
+        self._sam_processor = ProcessorClass.from_pretrained(self.args.sam_model)
+        self._sam_model = ModelClass.from_pretrained(self.args.sam_model)
         self._sam_model.to(self.device).eval()
 
     def _load_dino(self) -> None:
@@ -1071,6 +1087,8 @@ def run(args: argparse.Namespace) -> None:
         "camera_yaml": serialized_relative_path(camera_yaml, output),
         "frame_count": len(frames),
         "objects": labels,
+        "sam_backend": args.sam_backend,
+        "sam_model": args.sam_model,
         "criteria": {
             "minimum_projected_points": args.minimum_projected_points,
             "maximum_center_distance_m": args.maximum_center_distance,
@@ -1130,7 +1148,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--qwen-model", default="Qwen/Qwen3-VL-4B-Instruct")
     parser.add_argument("--dino-model", default="IDEA-Research/grounding-dino-base")
-    parser.add_argument("--sam-model", default="facebook/sam-vit-base")
+    parser.add_argument(
+        "--sam-backend",
+        choices=("sam1", "sam2"),
+        default="sam1",
+        help="SAM architecture used for point and box prompts (default: sam1)",
+    )
+    parser.add_argument(
+        "--sam-model",
+        help=(
+            "model ID or local Transformers directory; defaults to "
+            "facebook/sam-vit-base for sam1 and facebook/sam2.1-hiera-large for sam2"
+        ),
+    )
     parser.add_argument("--box-threshold", type=float, default=0.20)
     parser.add_argument("--text-threshold", type=float, default=0.20)
     parser.add_argument(

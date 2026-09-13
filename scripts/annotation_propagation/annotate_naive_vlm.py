@@ -321,6 +321,7 @@ def run(args: argparse.Namespace) -> None:
         "frame_count": len(frames),
         "objects": [asdict(definition) for definition in objects],
         "dino_model": args.dino_model,
+        "sam_backend": args.sam_backend,
         "sam_model": args.sam_model,
         "box_threshold": args.box_threshold,
         "text_threshold": args.text_threshold,
@@ -377,7 +378,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dino-model", default="IDEA-Research/grounding-dino-base")
-    parser.add_argument("--sam-model", default="facebook/sam-vit-base")
+    parser.add_argument(
+        "--sam-backend",
+        choices=("sam1", "sam2"),
+        default="sam1",
+        help="SAM architecture used for box prompts (default: sam1)",
+    )
+    parser.add_argument(
+        "--sam-model",
+        help=(
+            "model ID or local Transformers directory; defaults to "
+            "facebook/sam-vit-base for sam1 and facebook/sam2.1-hiera-large for sam2"
+        ),
+    )
     parser.add_argument("--box-threshold", type=float, default=0.20)
     parser.add_argument("--text-threshold", type=float, default=0.20)
     parser.add_argument("--minimum-mask-pixels", type=int, default=25)
