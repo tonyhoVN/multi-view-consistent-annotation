@@ -674,7 +674,7 @@ def text_prompt_mask(
     prompt_point: Sequence[float],
     args: argparse.Namespace,
 ) -> np.ndarray | None:
-    """Return the first text candidate passing prompt and area consistency."""
+    """Return the valid mask whose foreground center is nearest the prompt."""
     detections = models.detect_boxes(image, state.label)
     if not detections:
         return None
@@ -683,24 +683,36 @@ def text_prompt_mask(
     # nearby instance from the object propagated by the geometric prompt.
     boxes = [box for box, _ in detections]
     masks = models.segment_boxes(image, boxes)
-    column = int(float(prompt_point[0]))
-    row = int(float(prompt_point[1]))
-    for (_, _confidence), raw_mask in zip(detections, masks):
+    prompt_x = float(prompt_point[0])
+    prompt_y = float(prompt_point[1])
+    valid_masks: list[tuple[float, np.ndarray]] = []
+    for (box, _confidence), raw_mask in zip(detections, masks):
         mask = keep_largest_component(raw_mask)
         height, width = mask.shape
 
-        # Match get_validated_mask_vlm_first: the projected median must fall
-        # inside this candidate and its area must agree with M_best.
-        if not (0 <= column < width and 0 <= row < height):
+        # Associate proposals geometrically: the propagated prompt must be in
+        # both the image and this DINO box. It need not lie on SAM foreground.
+        if not (0.0 <= prompt_x < width and 0.0 <= prompt_y < height):
             continue
-        if not mask[row, column]:
+        x_min, y_min, x_max, y_max = map(float, box)
+        if not (x_min <= prompt_x <= x_max and y_min <= prompt_y <= y_max):
             continue
         if int(mask.sum()) < args.minimum_mask_pixels:
             continue
         area_valid, _ = valid_area_ratio(mask, state, args)
         if area_valid:
-            return mask
-    return None
+            rows, columns = np.nonzero(mask)
+            center_x = float(columns.mean())
+            center_y = float(rows.mean())
+            center_distance = float(
+                np.hypot(center_x - prompt_x, center_y - prompt_y)
+            )
+            valid_masks.append((center_distance, mask))
+
+    # Resolve multiple valid proposals by proximity to the propagated object.
+    if not valid_masks:
+        return None
+    return min(valid_masks, key=lambda candidate: candidate[0])[1]
 
 
 def clean_spatial_cloud(
@@ -832,8 +844,8 @@ def propagate_to_frame(
     # --- 6. COMMIT THE ACCEPTED TRACKING STATE ---
     # A rejected frame never replaces M_prev or its filtered object point cloud.
     state.mask = mask
+    state.point_cloud = cloud
     if area > state.best_area:
-        state.point_cloud = cloud
         state.best_mask = mask.copy()
         state.best_area = area
     return True, source, prompt_point
