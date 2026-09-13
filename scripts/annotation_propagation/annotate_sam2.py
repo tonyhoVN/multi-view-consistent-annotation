@@ -17,6 +17,7 @@ import sys
 import time
 from typing import Any, Sequence
 
+import cv2
 import numpy as np
 from PIL import Image
 import torch
@@ -33,14 +34,13 @@ def output_masks(
     output: Any,
     height: int,
     width: int,
-    apply_non_overlapping_constraints: bool,
 ) -> dict[int, tuple[np.ndarray, float]]:
     """Convert one SAM 2 video output to object-ID-keyed full-size masks."""
     masks = processor.post_process_masks(
         [output.pred_masks],
         original_sizes=[[height, width]],
         binarize=True,
-        apply_non_overlapping_constraints=apply_non_overlapping_constraints,
+        apply_non_overlapping_constraints=False,
     )[0]
     object_ids = [int(value) for value in output.object_ids]
     logits = output.object_score_logits.detach().float().cpu().reshape(-1)
@@ -80,6 +80,60 @@ def tracked_annotation(
         source=source,
         confidence=confidence,
         prompt_point_xy=prompt_point,
+    )
+
+
+def save_unfiltered_frame_masks(
+    output: Path,
+    frame: transfer.Frame,
+    camera_frame: str,
+    annotations: Sequence[transfer.MaskAnnotation],
+    resolution: tuple[int, int],
+) -> None:
+    """Save every tracker result, including an all-background mask."""
+    directory = transfer.output_frame_directory(output, frame, camera_frame)
+    directory.mkdir(parents=True, exist_ok=True)
+    objects = []
+
+    # Empty masks remain predictions for evaluation but have no natural box.
+    for annotation in annotations:
+        filename = f"{annotation.instance}.png"
+        mask = annotation.mask.astype(np.uint8) * 255
+        if not cv2.imwrite(str(directory / filename), mask):
+            raise OSError(f"failed to save SAM 2 mask: {directory / filename}")
+        bbox = (
+            transfer.mask_bounding_box(annotation.mask)
+            if np.any(annotation.mask)
+            else [0, 0, 0, 0]
+        )
+        objects.append(
+            {
+                "instance": annotation.instance,
+                "prim_path": annotation.prim_path,
+                "segmentation_id": annotation.segmentation_id,
+                "visible_pixels": int(annotation.mask.sum()),
+                "mask": filename,
+                "bbox_xyxy": bbox,
+                "label": annotation.label,
+                "source": annotation.source,
+                "confidence": float(annotation.confidence),
+                "prompt_point_xy": (
+                    None
+                    if annotation.prompt_point_xy is None
+                    else list(annotation.prompt_point_xy)
+                ),
+            }
+        )
+    record = {
+        "camera_frame": camera_frame,
+        "resolution": [int(resolution[0]), int(resolution[1])],
+        "sample_index": frame.sample_index,
+        "path_index": frame.path_index,
+        "visible_object_count": len(objects),
+        "objects": objects,
+    }
+    (directory / "manifest.json").write_text(
+        json.dumps(record, indent=2) + "\n", encoding="utf-8"
     )
 
 
@@ -151,7 +205,6 @@ def run(args: argparse.Namespace) -> Path:
                 initial_output,
                 height,
                 width,
-                args.apply_non_overlapping_constraints,
             )
         }
         for result in propagated:
@@ -163,7 +216,6 @@ def run(args: argparse.Namespace) -> Path:
                 result,
                 height,
                 width,
-                args.apply_non_overlapping_constraints,
             )
             print(f"SAM 2 video [{frame_index + 1}/{len(frames)}]")
 
@@ -185,12 +237,6 @@ def run(args: argparse.Namespace) -> Path:
                 )
                 continue
             mask, confidence = prediction
-            if int(mask.sum()) < args.minimum_mask_pixels:
-                failures.append(
-                    {"path_index": frame.path_index, "sample_index": frame.sample_index,
-                     "object": seed["label"], "reason": "mask below minimum pixels"}
-                )
-                continue
             annotation = tracked_annotation(
                 seed,
                 object_id,
@@ -201,14 +247,20 @@ def run(args: argparse.Namespace) -> Path:
             )
             annotations.append(annotation)
         annotations_by_path[frame.path_index] = annotations
-        transfer.save_frame_masks(
+        save_unfiltered_frame_masks(
             output, frame, camera_frame, annotations, (width, height)
         )
 
     visualization_directory = None
     if args.save_visualizations:
+        # The shared renderer requires a nonempty mask to draw a bounding box;
+        # removing empty masks here affects visualization only, not saved data.
+        visualizable = {
+            path_index: [item for item in items if np.any(item.mask)]
+            for path_index, items in annotations_by_path.items()
+        }
         visualization_directory = transfer.save_annotation_visualizations(
-            output, frames, annotations_by_path
+            output, frames, visualizable
         )
     summary = {
         "method": "sam2_video",
@@ -222,8 +274,8 @@ def run(args: argparse.Namespace) -> Path:
             str(seed["label"]): list(point)
             for seed, point in zip(seeds, seed_points)
         },
-        "minimum_mask_pixels": args.minimum_mask_pixels,
-        "apply_non_overlapping_constraints": args.apply_non_overlapping_constraints,
+        "candidate_filter_enabled": False,
+        "apply_non_overlapping_constraints": False,
         "inference_state_device": args.inference_state_device,
         "video_storage_device": args.video_storage_device,
         "failures": failures,
@@ -259,8 +311,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--inference-state-device", default="cpu")
     parser.add_argument("--video-storage-device", default="cpu")
     parser.add_argument("--vision-feature-cache-size", type=int, default=1)
-    parser.add_argument("--minimum-mask-pixels", type=int, default=25)
-    parser.add_argument("--apply-non-overlapping-constraints", action="store_true")
     parser.add_argument("--save-visualizations", action="store_true")
     parser.add_argument("--show-progress", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -269,8 +319,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(arguments: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(arguments)
-    if args.minimum_mask_pixels < 1:
-        raise ValueError("--minimum-mask-pixels must be positive")
     if args.vision_feature_cache_size < 1:
         raise ValueError("--vision-feature-cache-size must be positive")
     run(args)

@@ -153,8 +153,9 @@ scripts/annotation_propagation/run_sam2_video.sh \
 The default model is `facebook/sam2.1-hiera-small`, and output is written to
 `baseline_segment/sam2_video`. The absolute first-view masks are used only to
 derive median prompt points; even frame-zero masks are predicted by SAM 2. This
-baseline does not use camera TF, depth, Grounding DINO, or the
-transfer method's spatial/area filters. Use `--objects` to track a subset of
+baseline does not use camera TF, depth, Grounding DINO, or the transfer method's
+spatial/area filters. It saves every SAM 2 tracker mask without minimum-area,
+confidence, connected-component, or non-overlap filtering. Use `--objects` to track a subset of
 first-view classes. The output has the standard per-frame segmentation manifest
 layout and can be evaluated with `evaluate_segmentation_map.py`.
 
