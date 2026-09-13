@@ -138,6 +138,25 @@ conda run --no-capture-output -n vla \
 No-filter outputs default to a separate directory such as
 `baseline_segment/naive_vlm_zeroshot_no_filter`, preserving filtered results.
 
+## Run SAM 2 video baseline
+
+Track all objects jointly from the saved first-view masks through the selected
+scan route:
+
+```bash
+scripts/annotation_propagation/run_sam2_video.sh \
+  scan_output/run_3/manifest.json \
+  --overwrite \
+  --save-visualizations
+```
+
+The default model is `facebook/sam2.1-hiera-small`, and output is written to
+`baseline_segment/sam2_video`. This baseline uses RGB frame order and first-view
+mask prompts only; it does not use camera TF, depth, Grounding DINO, or the
+transfer method's spatial/area filters. Use `--objects` to track a subset of
+first-view classes. The output has the standard per-frame segmentation manifest
+layout and can be evaluated with `evaluate_segmentation_map.py`.
+
 ## Grounding DINO alias experiment
 
 Run the propagation method and both naive baselines for one existing scan using
