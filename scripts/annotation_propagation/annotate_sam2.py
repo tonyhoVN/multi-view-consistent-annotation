@@ -131,7 +131,9 @@ def run(args: argparse.Namespace) -> Path:
     processor.add_inputs_to_inference_session(
         inference_session=session,
         frame_idx=0,
-        obj_ids=object_ids,
+        # Transformers stores this list as session ``obj_with_new_inputs`` and
+        # clears it after inference. Pass a copy so our output ID mapping remains.
+        obj_ids=list(object_ids),
         input_points=[[[[x, y]] for x, y in seed_points]],
         input_labels=[[[1] for _ in seed_points]],
     )
