@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Annotate a scan route by propagating first-view masks with SAM 2 video.
 
-This baseline uses the saved segmentation masks in route frame zero as SAM 2
-video prompts. It tracks all seeded instances jointly and writes the same
+This baseline derives one median foreground point from every saved segmentation
+mask in route frame zero and uses those points as SAM 2 video prompts. It tracks
+all seeded instances jointly and writes the same
 per-frame manifest layout as the transfer and naive-VLM annotation methods.
 """
 
@@ -52,22 +53,21 @@ def output_masks(
     return result
 
 
-def seed_annotation(seed: dict[str, Any], object_id: int) -> transfer.MaskAnnotation:
-    """Preserve the exact first-view prompt mask in baseline output frame zero."""
-    label = str(seed["label"])
-    return transfer.MaskAnnotation(
-        label=label,
-        instance=str(seed.get("instance", f"object_{object_id:03d}_{transfer.slug(label)}")),
-        prim_path=str(seed.get("prim_path", "")),
-        segmentation_id=int(seed.get("segmentation_id", object_id)),
-        mask=np.asarray(seed["mask_array"], dtype=bool),
-        source="simulation_seed",
-        confidence=1.0,
-    )
+def median_mask_point(seed: dict[str, Any]) -> tuple[float, float]:
+    """Return the median foreground pixel of one absolute Isaac seed mask."""
+    rows, columns = np.nonzero(np.asarray(seed["mask_array"], dtype=bool))
+    if not len(columns):
+        raise ValueError(f"seed mask is empty: {seed.get('label', 'unknown')}")
+    return float(np.median(columns)), float(np.median(rows))
 
 
 def tracked_annotation(
-    seed: dict[str, Any], object_id: int, mask: np.ndarray, confidence: float
+    seed: dict[str, Any],
+    object_id: int,
+    mask: np.ndarray,
+    confidence: float,
+    source: str,
+    prompt_point: tuple[float, float] | None = None,
 ) -> transfer.MaskAnnotation:
     """Attach stable seed metadata to one propagated SAM 2 mask."""
     label = str(seed["label"])
@@ -77,8 +77,9 @@ def tracked_annotation(
         prim_path=str(seed.get("prim_path", "")),
         segmentation_id=int(seed.get("segmentation_id", object_id)),
         mask=mask,
-        source="sam2_video",
+        source=source,
         confidence=confidence,
+        prompt_point_xy=prompt_point,
     )
 
 
@@ -126,24 +127,30 @@ def run(args: argparse.Namespace) -> Path:
         dtype=dtype,
     )
     object_ids = list(range(1, len(seeds) + 1))
+    seed_points = [median_mask_point(seed) for seed in seeds]
     processor.add_inputs_to_inference_session(
         inference_session=session,
         frame_idx=0,
         obj_ids=object_ids,
-        input_masks=[np.asarray(seed["mask_array"], dtype=bool) for seed in seeds],
+        input_points=[[[[x, y]] for x, y in seed_points]],
+        input_labels=[[[1] for _ in seed_points]],
     )
 
-    # Prime the memory encoder on the prompted frame before forward propagation.
+    # Segment view zero from median points, then encode those predictions into
+    # video memory before following the camera trajectory.
     with torch.inference_mode():
-        model(inference_session=session, frame_idx=0)
+        initial_output = model(inference_session=session, frame_idx=0)
         propagated = model.propagate_in_video_iterator(
             session, start_frame_idx=0, show_progress_bar=args.show_progress
         )
         predictions = {
-            0: {
-                object_id: (np.asarray(seed["mask_array"], dtype=bool), 1.0)
-                for object_id, seed in zip(object_ids, seeds)
-            }
+            0: output_masks(
+                processor,
+                initial_output,
+                height,
+                width,
+                args.apply_non_overlapping_constraints,
+            )
         }
         for result in propagated:
             frame_index = int(result.frame_idx)
@@ -182,10 +189,13 @@ def run(args: argparse.Namespace) -> Path:
                      "object": seed["label"], "reason": "mask below minimum pixels"}
                 )
                 continue
-            annotation = (
-                seed_annotation(seed, object_id)
-                if frame_index == 0
-                else tracked_annotation(seed, object_id, mask, confidence)
+            annotation = tracked_annotation(
+                seed,
+                object_id,
+                mask,
+                confidence,
+                "sam2_video_point_seed" if frame_index == 0 else "sam2_video",
+                seed_points[object_id - 1] if frame_index == 0 else None,
             )
             annotations.append(annotation)
         annotations_by_path[frame.path_index] = annotations
@@ -205,7 +215,11 @@ def run(args: argparse.Namespace) -> Path:
         "frame_count": len(frames),
         "objects": [str(seed["label"]) for seed in seeds],
         "model": args.model,
-        "initialization": "first_route_capture_simulation_masks",
+        "initialization": "median_points_from_first_route_capture_simulation_masks",
+        "seed_points_xy": {
+            str(seed["label"]): list(point)
+            for seed, point in zip(seeds, seed_points)
+        },
         "minimum_mask_pixels": args.minimum_mask_pixels,
         "apply_non_overlapping_constraints": args.apply_non_overlapping_constraints,
         "inference_state_device": args.inference_state_device,

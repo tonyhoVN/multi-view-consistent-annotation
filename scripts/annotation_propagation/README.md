@@ -140,8 +140,8 @@ No-filter outputs default to a separate directory such as
 
 ## Run SAM 2 video baseline
 
-Track all objects jointly from the saved first-view masks through the selected
-scan route:
+Compute one median foreground point from each saved first-view Isaac mask, then
+track all point-prompted objects jointly through the selected scan route:
 
 ```bash
 scripts/annotation_propagation/run_sam2_video.sh \
@@ -151,11 +151,22 @@ scripts/annotation_propagation/run_sam2_video.sh \
 ```
 
 The default model is `facebook/sam2.1-hiera-small`, and output is written to
-`baseline_segment/sam2_video`. This baseline uses RGB frame order and first-view
-mask prompts only; it does not use camera TF, depth, Grounding DINO, or the
+`baseline_segment/sam2_video`. The absolute first-view masks are used only to
+derive median prompt points; even frame-zero masks are predicted by SAM 2. This
+baseline does not use camera TF, depth, Grounding DINO, or the
 transfer method's spatial/area filters. Use `--objects` to track a subset of
 first-view classes. The output has the standard per-frame segmentation manifest
 layout and can be evaluated with `evaluate_segmentation_map.py`.
+
+Run an inclusive range; both indices are mandatory:
+
+```bash
+scripts/annotation_propagation/run_all_sam2_video.sh 1 4 -- \
+  --overwrite --save-visualizations
+```
+
+The batch continues after failed or missing runs by default. Add
+`--stop-on-error` before the literal `--` to stop at the first failure.
 
 ## Grounding DINO alias experiment
 
