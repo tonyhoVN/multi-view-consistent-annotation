@@ -748,6 +748,53 @@ def valid_area_ratio(
     return valid, ratio
 
 
+# def text_prompt_mask(
+#     state: ObjectState,
+#     image: Image.Image,
+#     models: VisionModels,
+#     prompt_point: Sequence[float],
+#     args: argparse.Namespace,
+# ) -> np.ndarray | None:
+#     """Return the valid mask whose foreground center is nearest the prompt."""
+#     detections = models.detect_boxes(image, state.label)
+#     if not detections:
+#         return None
+
+#     # Segment every DINO proposal. Confidence alone cannot distinguish another
+#     # nearby instance from the object propagated by the geometric prompt.
+#     boxes = [box for box, _ in detections]
+#     masks = models.segment_boxes(image, boxes)
+#     prompt_x = float(prompt_point[0])
+#     prompt_y = float(prompt_point[1])
+#     valid_masks: list[tuple[float, np.ndarray]] = []
+#     for (box, _confidence), raw_mask in zip(detections, masks):
+#         mask = keep_largest_component(raw_mask)
+#         height, width = mask.shape
+
+#         # Associate proposals geometrically: the propagated prompt must be in
+#         # both the image and this DINO box. It need not lie on SAM foreground.
+#         if not (0.0 <= prompt_x < width and 0.0 <= prompt_y < height):
+#             continue
+#         x_min, y_min, x_max, y_max = map(float, box)
+#         if not (x_min <= prompt_x <= x_max and y_min <= prompt_y <= y_max):
+#             continue
+#         if int(mask.sum()) < args.minimum_mask_pixels:
+#             continue
+#         area_valid, _ = valid_area_ratio(mask, state, args)
+#         if area_valid:
+#             rows, columns = np.nonzero(mask)
+#             center_x = float(columns.mean())
+#             center_y = float(rows.mean())
+#             center_distance = float(
+#                 np.hypot(center_x - prompt_x, center_y - prompt_y)
+#             )
+#             valid_masks.append((center_distance, mask))
+
+#     # Resolve multiple valid proposals by proximity to the propagated object.
+#     if not valid_masks:
+#         return None
+#     return min(valid_masks, key=lambda candidate: candidate[0])[1]
+
 def text_prompt_mask(
     state: ObjectState,
     image: Image.Image,
@@ -755,46 +802,42 @@ def text_prompt_mask(
     prompt_point: Sequence[float],
     args: argparse.Namespace,
 ) -> np.ndarray | None:
-    """Return the valid mask whose foreground center is nearest the prompt."""
+    """Return the highest-confidence mask whose DINO box contains the prompt."""
     detections = models.detect_boxes(image, state.label)
     if not detections:
         return None
 
-    # Segment every DINO proposal. Confidence alone cannot distinguish another
-    # nearby instance from the object propagated by the geometric prompt.
-    boxes = [box for box, _ in detections]
-    masks = models.segment_boxes(image, boxes)
     prompt_x = float(prompt_point[0])
     prompt_y = float(prompt_point[1])
-    valid_masks: list[tuple[float, np.ndarray]] = []
-    for (box, _confidence), raw_mask in zip(detections, masks):
-        mask = keep_largest_component(raw_mask)
-        height, width = mask.shape
+    width, height = image.size
 
-        # Associate proposals geometrically: the propagated prompt must be in
-        # both the image and this DINO box. It need not lie on SAM foreground.
-        if not (0.0 <= prompt_x < width and 0.0 <= prompt_y < height):
-            continue
-        x_min, y_min, x_max, y_max = map(float, box)
-        if not (x_min <= prompt_x <= x_max and y_min <= prompt_y <= y_max):
-            continue
-        if int(mask.sum()) < args.minimum_mask_pixels:
-            continue
-        area_valid, _ = valid_area_ratio(mask, state, args)
-        if area_valid:
-            rows, columns = np.nonzero(mask)
-            center_x = float(columns.mean())
-            center_y = float(rows.mean())
-            center_distance = float(
-                np.hypot(center_x - prompt_x, center_y - prompt_y)
-            )
-            valid_masks.append((center_distance, mask))
-
-    # Resolve multiple valid proposals by proximity to the propagated object.
-    if not valid_masks:
+    if not (0.0 <= prompt_x < width and 0.0 <= prompt_y < height):
         return None
-    return min(valid_masks, key=lambda candidate: candidate[0])[1]
 
+    # Retain only DINO boxes containing the propagated prompt.
+    containing_detections = []
+    for box, confidence in detections:
+        x_min, y_min, x_max, y_max = map(float, box)
+        if x_min <= prompt_x <= x_max and y_min <= prompt_y <= y_max:
+            containing_detections.append((box, confidence))
+
+    if not containing_detections:
+        return None
+
+    # Select the highest-confidence box before running SAM.
+    best_box, _ = max(
+        containing_detections,
+        key=lambda detection: detection[1],
+    )
+    mask = keep_largest_component(
+        models.segment_box(image, best_box)
+    )
+
+    if int(mask.sum()) < args.minimum_mask_pixels:
+        return None
+
+    area_valid, _ = valid_area_ratio(mask, state, args)
+    return mask if area_valid else None
 
 def clean_spatial_cloud(
     cloud: o3d.geometry.PointCloud, args: argparse.Namespace
