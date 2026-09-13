@@ -323,6 +323,10 @@ def run(args: argparse.Namespace) -> None:
         "dino_model": args.dino_model,
         "sam_backend": args.sam_backend,
         "sam_model": args.sam_model,
+        "sam_checkpoint": (
+            str(args.sam_checkpoint) if args.sam_checkpoint is not None else None
+        ),
+        "sam_encoder_version": args.sam_encoder_version,
         "box_threshold": args.box_threshold,
         "text_threshold": args.text_threshold,
         "minimum_mask_pixels": args.minimum_mask_pixels,
@@ -380,7 +384,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dino-model", default="IDEA-Research/grounding-dino-base")
     parser.add_argument(
         "--sam-backend",
-        choices=("sam1", "sam2"),
+        choices=("sam1", "sam2", "meta_sam1"),
         default="sam1",
         help="SAM architecture used for box prompts (default: sam1)",
     )
@@ -390,6 +394,17 @@ def build_parser() -> argparse.ArgumentParser:
             "model ID or local Transformers directory; defaults to "
             "facebook/sam-vit-base for sam1 and facebook/sam2.1-hiera-large for sam2"
         ),
+    )
+    parser.add_argument(
+        "--sam-checkpoint",
+        type=Path,
+        help="native .pth checkpoint required by --sam-backend meta_sam1",
+    )
+    parser.add_argument(
+        "--sam-encoder-version",
+        choices=("vit_b", "vit_l", "vit_h"),
+        default="vit_h",
+        help="native Meta SAM encoder matching --sam-checkpoint (default: vit_h)",
     )
     parser.add_argument("--box-threshold", type=float, default=0.20)
     parser.add_argument("--text-threshold", type=float, default=0.20)

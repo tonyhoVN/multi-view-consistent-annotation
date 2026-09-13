@@ -267,7 +267,11 @@ class VisionModels:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.args.sam_backend = getattr(self.args, "sam_backend", "sam1")
-        if getattr(self.args, "sam_model", None) is None:
+        self.args.sam_model = getattr(self.args, "sam_model", None)
+        if (
+            self.args.sam_backend != "meta_sam1"
+            and getattr(self.args, "sam_model", None) is None
+        ):
             self.args.sam_model = (
                 "facebook/sam2.1-hiera-large"
                 if self.args.sam_backend == "sam2"
@@ -278,6 +282,8 @@ class VisionModels:
         self._dino_model = None
         self._sam_processor = None
         self._sam_model = None
+        self._sam_predictor = None
+        self._sam_predictor_image = None
         self._qwen_processor = None
         self._qwen_model = None
 
@@ -288,6 +294,25 @@ class VisionModels:
         # SAM 1 and SAM 2 expose the same prompt/post-processing interface in
         # Transformers, so the propagation logic can stay backend-independent.
         backend = getattr(self.args, "sam_backend", "sam1")
+        if backend == "meta_sam1":
+            from segment_anything import SamPredictor, sam_model_registry
+
+            checkpoint = self.args.sam_checkpoint
+            if checkpoint is None:
+                raise ValueError(
+                    "--sam-checkpoint is required with --sam-backend meta_sam1"
+                )
+            checkpoint = checkpoint.expanduser().resolve()
+            if not checkpoint.is_file():
+                raise FileNotFoundError(f"SAM checkpoint does not exist: {checkpoint}")
+            print(
+                f"Loading Meta SAM {self.args.sam_encoder_version}: {checkpoint}"
+            )
+            self._sam_model = sam_model_registry[self.args.sam_encoder_version](
+                checkpoint=str(checkpoint)
+            ).to(self.device).eval()
+            self._sam_predictor = SamPredictor(self._sam_model)
+            return
         if backend == "sam2":
             from transformers import Sam2Model as ModelClass
             from transformers import Sam2Processor as ProcessorClass
@@ -299,6 +324,20 @@ class VisionModels:
         self._sam_processor = ProcessorClass.from_pretrained(self.args.sam_model)
         self._sam_model = ModelClass.from_pretrained(self.args.sam_model)
         self._sam_model.to(self.device).eval()
+
+    def _prepare_meta_sam_image(self, image: Image.Image) -> None:
+        """Cache one native Meta SAM image embedding across prompt retries."""
+        if self._sam_predictor_image is image:
+            return
+        self._sam_predictor.set_image(np.asarray(image.convert("RGB")))
+        self._sam_predictor_image = image
+
+    def _meta_sam_prediction(self, **prompts: Any) -> np.ndarray:
+        """Run native Meta SAM and select its highest predicted-IoU mask."""
+        masks, scores, _ = self._sam_predictor.predict(
+            multimask_output=True, **prompts
+        )
+        return masks[int(np.argmax(scores))].astype(bool)
 
     def _load_dino(self) -> None:
         if self._dino_model is not None:
@@ -347,10 +386,25 @@ class VisionModels:
     def segment_point(self, image: Image.Image, point: Sequence[float]) -> np.ndarray:
         """Run SAM with one positive point prompt at the projected median."""
         self._load_sam()
+        coordinates = [float(point[0]), float(point[1])]
+        if self.args.sam_backend == "meta_sam1":
+            self._prepare_meta_sam_image(image)
+            return self._meta_sam_prediction(
+                point_coords=np.asarray([coordinates], dtype=np.float32),
+                point_labels=np.asarray([1], dtype=np.int32),
+            )
+        if self.args.sam_backend == "sam2":
+            # SAM 2 represents prompts as image -> object -> point -> (x, y).
+            input_points = [[[[*coordinates]]]]
+            input_labels = [[[1]]]
+        else:
+            # SAM 1 uses image -> point -> (x, y) for one prompt object.
+            input_points = [[[*coordinates]]]
+            input_labels = [[1]]
         inputs = self._sam_processor(
             image,
-            input_points=[[[float(point[0]), float(point[1])]]],
-            input_labels=[[1]],
+            input_points=input_points,
+            input_labels=input_labels,
             return_tensors="pt",
         )
         return self._sam_masks(inputs)[0]
@@ -358,6 +412,11 @@ class VisionModels:
     def segment_box(self, image: Image.Image, box: Sequence[float]) -> np.ndarray:
         """Run SAM for one Grounding-DINO pixel-coordinate bounding box."""
         self._load_sam()
+        if self.args.sam_backend == "meta_sam1":
+            self._prepare_meta_sam_image(image)
+            return self._meta_sam_prediction(
+                box=np.asarray(box, dtype=np.float32)
+            )
         inputs = self._sam_processor(
             image, input_boxes=[[[float(value) for value in box]]], return_tensors="pt"
         )
@@ -370,6 +429,12 @@ class VisionModels:
         if not boxes:
             return []
         self._load_sam()
+        if self.args.sam_backend == "meta_sam1":
+            self._prepare_meta_sam_image(image)
+            return [
+                self._meta_sam_prediction(box=np.asarray(box, dtype=np.float32))
+                for box in boxes
+            ]
         input_boxes = [
             [[float(value) for value in box] for box in boxes]
         ]
@@ -1089,6 +1154,10 @@ def run(args: argparse.Namespace) -> None:
         "objects": labels,
         "sam_backend": args.sam_backend,
         "sam_model": args.sam_model,
+        "sam_checkpoint": (
+            str(args.sam_checkpoint) if args.sam_checkpoint is not None else None
+        ),
+        "sam_encoder_version": args.sam_encoder_version,
         "criteria": {
             "minimum_projected_points": args.minimum_projected_points,
             "maximum_center_distance_m": args.maximum_center_distance,
@@ -1150,7 +1219,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dino-model", default="IDEA-Research/grounding-dino-base")
     parser.add_argument(
         "--sam-backend",
-        choices=("sam1", "sam2"),
+        choices=("sam1", "sam2", "meta_sam1"),
         default="sam1",
         help="SAM architecture used for point and box prompts (default: sam1)",
     )
@@ -1160,6 +1229,17 @@ def build_parser() -> argparse.ArgumentParser:
             "model ID or local Transformers directory; defaults to "
             "facebook/sam-vit-base for sam1 and facebook/sam2.1-hiera-large for sam2"
         ),
+    )
+    parser.add_argument(
+        "--sam-checkpoint",
+        type=Path,
+        help="native .pth checkpoint required by --sam-backend meta_sam1",
+    )
+    parser.add_argument(
+        "--sam-encoder-version",
+        choices=("vit_b", "vit_l", "vit_h"),
+        default="vit_h",
+        help="native Meta SAM encoder matching --sam-checkpoint (default: vit_h)",
     )
     parser.add_argument("--box-threshold", type=float, default=0.20)
     parser.add_argument("--text-threshold", type=float, default=0.20)
