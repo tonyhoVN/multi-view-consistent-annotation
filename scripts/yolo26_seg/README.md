@@ -65,3 +65,9 @@ labels always come from `save_segment`, regardless of the training source.
 
 Results are written under `scan_output/yolo26_seg/<source>/`. The compact report
 `ground_truth_validation.json` contains segmentation and box mAP50/mAP50-95.
+After `run_validation.sh` finishes, all method reports are also combined into
+`scan_output/yolo26_seg_validation_summary.json`. Regenerate it manually with:
+
+```bash
+python3 scripts/yolo26_seg/summarize_validation.py
+```

@@ -19,3 +19,9 @@ for SOURCE in "${SOURCES[@]}"; do
     --output "$EXPERIMENT/ground_truth_validation.json" \
     --exist-ok
 done
+
+# Refresh one machine-readable comparison after all requested models finish.
+conda run --no-capture-output -n vla python \
+  "$REPOSITORY_ROOT/scripts/yolo26_seg/summarize_validation.py" \
+  --validation-root "$REPOSITORY_ROOT/scan_output/yolo26_seg" \
+  --output "$REPOSITORY_ROOT/scan_output/yolo26_seg_validation_summary.json"

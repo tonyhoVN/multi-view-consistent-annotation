@@ -78,6 +78,8 @@ for i in $(seq "$START" "$END"); do
   ok=1
   evaluate_predictions "$MANIFEST" "$RUN_DIR/transfer_segment" \
     "proposed method" "$i" || ok=0
+  evaluate_predictions "$MANIFEST" "$RUN_DIR/baseline_segment/sam2_video" \
+    "SAM2 video" "$i" || ok=0
   evaluate_predictions "$MANIFEST" "$RUN_DIR/baseline_segment/naive_vlm_zeroshot" \
     "naive VLM zeroshot" "$i" || ok=0
   evaluate_predictions "$MANIFEST" "$RUN_DIR/baseline_segment/naive_vlm_multi_shot" \

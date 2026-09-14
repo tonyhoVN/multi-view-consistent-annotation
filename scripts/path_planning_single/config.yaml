@@ -16,7 +16,7 @@ single_path_planning:
   radius: 0.3
   # L latitude layers and K uniformly spaced azimuths produce L*K poses.
   latitude_layers: 5
-  azimuth_samples: 36
+  azimuth_samples: 20
   # initial_pose anchors the nearest first view; all_accepted searches every start.
   path_start_mode: initial_pose
   elevation_bounds: [30.0, 80.0]

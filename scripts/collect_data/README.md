@@ -23,6 +23,21 @@ python3 scripts/collect_data/collect_kinova_scans.py \
   --start-run 10
 ```
 
+When scenes can contain multiple objects of the same class, use the identity-aware
+collector. It calls `/list_scene_objects` after Isaac becomes ready and before
+starting MoveIt or robot motion:
+
+```bash
+python3 scripts/collect_data/collect_kinova_scans_obj_name.py \
+  --runs 5 \
+  --start-run 10
+```
+
+It preserves every exact `class_name`, `instance_name`, and `prim_path` in
+`run_N/scene_objects.json` and embeds the same inventory in `run_N/manifest.json`.
+Duplicate classes therefore remain separate instances such as
+`object_000_banana` and `object_003_banana`.
+
 The default paths are:
 
 ```text
@@ -67,6 +82,7 @@ scan_output/run_10/
 ├── save_images/
 ├── save_segment/
 ├── save_TF/
+├── scene_objects.json
 ├── baseline_segment/
 │   ├── naive_vlm_zeroshot/
 │   └── naive_vlm_multi_shot/

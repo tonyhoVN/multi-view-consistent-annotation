@@ -48,20 +48,20 @@ def infer_manifest_path(directory):
     return next((path for path in candidates if path.is_file()), None)
 
 
-def load_hamilton_trajectory(manifest_path):
-    """Load captured camera transforms in the manifest's Hamilton path order."""
+def load_route_trajectory(manifest_path, route_name):
+    """Load captured camera transforms in one selected manifest route order."""
     manifest_path = Path(manifest_path).expanduser().resolve()
     with manifest_path.open("r", encoding="utf-8") as stream:
         manifest = json.load(stream)
 
     try:
-        sample_order = manifest["routes"]["hamilton_2opt"]["sample_indices"]
+        sample_order = manifest["routes"][route_name]["sample_indices"]
     except (KeyError, TypeError) as error:
         raise ValueError(
-            f"{manifest_path} has no routes.hamilton_2opt.sample_indices"
+            f"{manifest_path} has no routes.{route_name}.sample_indices"
         ) from error
     if not isinstance(sample_order, list):
-        raise ValueError("Hamilton sample_indices must be a list")
+        raise ValueError(f"{route_name} sample_indices must be a list")
 
     # A failed motion has no camera_transform, so only plot captured viewpoints.
     transform_by_sample = {}
@@ -79,7 +79,9 @@ def load_hamilton_trajectory(manifest_path):
         try:
             sample_index = int(raw_index)
         except (TypeError, ValueError) as error:
-            raise ValueError(f"invalid Hamilton sample index {raw_index!r}") from error
+            raise ValueError(
+                f"invalid {route_name} sample index {raw_index!r}"
+            ) from error
         transform_path = transform_by_sample.get(sample_index)
         if transform_path is None or not transform_path.is_file():
             missing.append(sample_index)
@@ -94,12 +96,19 @@ def load_hamilton_trajectory(manifest_path):
     return indices, matrices, missing
 
 
+def load_hamilton_trajectory(manifest_path):
+    """Backward-compatible wrapper for loading the optimized route."""
+    return load_route_trajectory(manifest_path, "hamilton_2opt")
+
+
 def plot_frames(
     names,
     matrices,
     axis_len=0.05,
     max_frames=None,
     trajectory_matrices=None,
+    trajectory_label="Hamilton + 2-opt",
+    trajectory_color="#19ff00",
 ):
     if max_frames is not None:
         names = names[:max_frames]
@@ -134,11 +143,11 @@ def plot_frames(
             trajectory_origins[:, 0],
             trajectory_origins[:, 1],
             trajectory_origins[:, 2],
-            color="#19ff00",
+            color=trajectory_color,
             linewidth=3.0,
             marker="o",
             markersize=3.5,
-            label="Hamilton + 2-opt",
+            label=trajectory_label,
             zorder=10,
         )
         ax.scatter(
@@ -154,7 +163,7 @@ def plot_frames(
     ax.set_zlabel("Z")
     title = f"TF frames ({len(matrices)} matrices)"
     if trajectory_matrices:
-        title += f"; Hamilton path ({len(trajectory_matrices)} captured views)"
+        title += f"; {trajectory_label} ({len(trajectory_matrices)} captured views)"
     ax.set_title(title)
 
     # Include the route in the equal-aspect bounds even when --max-frames is used.
@@ -183,9 +192,15 @@ def main():
         type=Path,
         default=None,
         help=(
-            "scan manifest containing routes.hamilton_2opt; by default infer "
+            "scan manifest containing the selected route; by default infer "
             "<run>/manifest.json (legacy names are also supported)"
         ),
+    )
+    parser.add_argument(
+        "--route",
+        choices=("hamilton", "hamilton_2opt", "random", "spiral"),
+        default="hamilton_2opt",
+        help="manifest route to draw; hamilton is an alias for hamilton_2opt",
     )
     parser.add_argument("--save", type=str, default=None, help="path to save figure instead of showing")
     args = parser.parse_args()
@@ -196,20 +211,27 @@ def main():
         return
 
     manifest_path = args.manifest or infer_manifest_path(args.directory)
+    route_name = "hamilton_2opt" if args.route == "hamilton" else args.route
+    route_styles = {
+        "hamilton_2opt": ("Hamilton + 2-opt", "#19ff00"),
+        "random": ("Random route", "#ff1493"),
+        "spiral": ("Spiral route", "#00d9ff"),
+    }
+    trajectory_label, trajectory_color = route_styles[route_name]
     trajectory_indices, trajectory_matrices = [], []
     if manifest_path is None:
-        print("No scan manifest found; plotting TF frames without a Hamilton trajectory")
+        print("No scan manifest found; plotting TF frames without a route trajectory")
     else:
-        trajectory_indices, trajectory_matrices, missing = load_hamilton_trajectory(
-            manifest_path
+        trajectory_indices, trajectory_matrices, missing = load_route_trajectory(
+            manifest_path, route_name
         )
         print(
-            f"Loaded Hamilton trajectory with {len(trajectory_matrices)} captured "
+            f"Loaded {trajectory_label} with {len(trajectory_matrices)} captured "
             f"views from {manifest_path}"
         )
         if missing:
             print(
-                "Hamilton samples without a saved transform (skipped): "
+                f"{trajectory_label} samples without a saved transform (skipped): "
                 + ", ".join(map(str, missing))
             )
 
@@ -220,6 +242,8 @@ def main():
         axis_len=args.axis_len,
         max_frames=args.max_frames,
         trajectory_matrices=trajectory_matrices,
+        trajectory_label=trajectory_label,
+        trajectory_color=trajectory_color,
     )
 
     if args.save:

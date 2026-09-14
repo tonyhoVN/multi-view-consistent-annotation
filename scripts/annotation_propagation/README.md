@@ -169,6 +169,21 @@ scripts/annotation_propagation/run_all_sam2_video.sh 1 4 -- \
 The batch continues after failed or missing runs by default. Add
 `--stop-on-error` before the literal `--` to stop at the first failure.
 
+## Create an annotation GIF
+
+Generate a trajectory-ordered animation from a method's saved visualizations:
+
+```bash
+python3 scripts/annotation_propagation/create_annotation_gif.py \
+  12 sam2_video --fps 5
+```
+
+The first argument accepts `12`, `run_12`, or an explicit run directory. Known
+methods include `transfer`, `transfer_spiral`, `sam2_video`, and all naive-VLM
+directory names. The method's recorded route controls frame ordering; use
+`--route` only to override it. Annotation must first be run with
+`--save-visualizations`.
+
 ## Grounding DINO alias experiment
 
 Run the propagation method and both naive baselines for one existing scan using

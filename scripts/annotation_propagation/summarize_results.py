@@ -44,6 +44,18 @@ METHODS = [
         "run_{run}/baseline_segment/naive_vlm_multi_shot",
         "naive_vlm_manifest.json",
     ),
+    Method(
+        "sam2_video",
+        "SAM 2 Video",
+        "run_{run}/baseline_segment/sam2_video",
+        "sam2_video_manifest.json",
+    ),
+    Method(
+        "sam2_transfer_reanchor",
+        "SAM 2 + Transfer Reanchor",
+        "run_{run}/baseline_segment/sam2_transfer_reanchor",
+        "sam2_transfer_reanchor_manifest.json",
+    ),
 ]
 
 def load_json(path: Path) -> dict | None:

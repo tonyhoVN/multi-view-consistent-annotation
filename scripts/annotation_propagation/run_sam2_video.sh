@@ -8,4 +8,7 @@ fi
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 conda run --no-capture-output -n vla \
-  python "$SCRIPT_DIR/annotate_sam2.py" "$@"
+  python "$SCRIPT_DIR/annotate_sam2.py" \
+  "$@" \
+  --save-visualizations \
+  --overwrite

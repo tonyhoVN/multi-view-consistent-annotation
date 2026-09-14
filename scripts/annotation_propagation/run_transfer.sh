@@ -26,7 +26,7 @@ conda run --no-capture-output -n vla \
   --outlier-neighbors 20 \
   --outlier-std-ratio 2.0 \
   --save-visualizations \
-  --maximum-center-distance 0.1 \
-  --minimum-area-ratio 0.2 \
+  --maximum-center-distance 0.05 \
+  --minimum-area-ratio 0.1 \
   --maximum-area-ratio 2.5 \
   "$@"

@@ -122,6 +122,26 @@ for i in $(seq "$START" "$END"); do
   fi
 
   if [[ $ok -eq 1 ]]; then
+    run_step "evaluate SAM2 tracking (run $i)" \
+      conda run --no-capture-output -n vla \
+      python "$SCRIPT_DIR/evaluate_segmentation_map.py" "$MANIFEST" \
+      --predictions "$RUN_DIR/baseline_segment/sam2_video" \
+      --output "$RUN_DIR/baseline_segment/sam2_video/map_report.json" \
+      || ok=0
+    report_gpu "after evaluating SAM2 tracking (run $i)"
+  fi
+
+  if [[ $ok -eq 1 ]]; then
+    run_step "evaluate naive VLM baseline, zeroshot (run $i)" \
+      conda run --no-capture-output -n vla \
+      python "$SCRIPT_DIR/evaluate_segmentation_map.py" "$MANIFEST" \
+      --predictions "$RUN_DIR/baseline_segment/naive_vlm_zeroshot_no_filter" \
+      --output "$RUN_DIR/baseline_segment/naive_vlm_zeroshot_no_filter/map_report.json" \
+      || ok=0
+    report_gpu "after evaluating zeroshot no filter VLM (run $i)"
+  fi
+
+  if [[ $ok -eq 1 ]]; then
     run_step "evaluate naive VLM baseline, multi-shot (run $i)" \
       conda run --no-capture-output -n vla \
       python "$SCRIPT_DIR/evaluate_segmentation_map.py" "$MANIFEST" \
@@ -130,6 +150,16 @@ for i in $(seq "$START" "$END"); do
       || ok=0
     report_gpu "after evaluating multi-shot no filter VLM (run $i)"
   fi
+
+  for RUN in $(seq 85 95); do
+    RUN_DIR="scan_output/run_${RUN}"
+
+    conda run --no-capture-output -n vla \
+      python scripts/annotation_propagation/evaluate_segmentation_map.py \
+      "$RUN_DIR/manifest.json" \
+      --predictions "$RUN_DIR/baseline_segment/sam2_transfer_reanchor" \
+      --output "$RUN_DIR/baseline_segment/sam2_transfer_reanchor/map_report.json"
+  done
 
   if [[ $ok -eq 0 ]]; then
     FAILED_RUNS+=("$i")
