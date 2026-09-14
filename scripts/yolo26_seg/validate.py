@@ -25,6 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--device", default="0")
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--split",
+        choices=("val", "test"),
+        default="test",
+        help="dataset split to evaluate; final reporting should use test",
+    )
     parser.add_argument("--project", type=Path)
     parser.add_argument("--name", default="ground_truth_validation")
     parser.add_argument("--output", type=Path)
@@ -42,15 +48,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
         raise FileNotFoundError(f"model checkpoint does not exist: {checkpoint}")
     project = args.project.expanduser().resolve() if args.project else checkpoint.parents[1]
 
-    # The dataset builder always creates val labels from saved Isaac ground truth.
+    # Both held-out splits use Isaac ground truth; test is never used by training.
     metrics = YOLO(str(checkpoint)).val(
-        data=str(dataset), split="val", imgsz=args.imgsz, batch=args.batch,
+        data=str(dataset), split=args.split, imgsz=args.imgsz, batch=args.batch,
         device=args.device, workers=args.workers, project=str(project),
         name=args.name, exist_ok=args.exist_ok,
     )
     report = {
         "model": str(checkpoint), "dataset": str(dataset),
-        "validation_split": "val", "validation_annotation_source": "Isaac ground truth",
+        "validation_split": args.split,
+        "validation_annotation_source": "Isaac ground truth",
         "mask_mAP50": scalar(metrics.seg.map50),
         "mask_mAP50_95": scalar(metrics.seg.map),
         "box_mAP50": scalar(metrics.box.map50),

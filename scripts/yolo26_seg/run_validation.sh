@@ -15,6 +15,7 @@ for SOURCE in "${SOURCES[@]}"; do
   conda run --no-capture-output -n vla python \
     "$REPOSITORY_ROOT/scripts/yolo26_seg/validate.py" \
     "$DATASET" "$EXPERIMENT/weights/best.pt" \
+    --split test \
     --project "$EXPERIMENT" \
     --output "$EXPERIMENT/ground_truth_validation.json" \
     --exist-ok

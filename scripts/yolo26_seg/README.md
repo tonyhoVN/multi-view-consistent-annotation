@@ -1,8 +1,8 @@
 # YOLO26-seg pseudo-label experiments
 
 This folder trains one `yolo26n-seg.pt` model per annotation method and validates
-every model against the saved Isaac ground truth. Training and validation runs
-must be disjoint.
+every model against saved Isaac ground truth. Train, validation, and test runs
+must be mutually disjoint.
 
 ## Annotation sources
 
@@ -17,15 +17,17 @@ must be disjoint.
 ## Train all standard experiments
 
 ```bash
-scripts/yolo26_seg/run_training.sh 1 35 36 44 \
+scripts/yolo26_seg/run_training.sh 1 35 36 40 41 44 \
   transfer naive_vlm_zeroshot naive_vlm_multi_shot
 ```
 
-The first range is used for training and the second for validation. The command
-runs inside the `vla` Conda environment. On first use, Ultralytics downloads
-`yolo26n-seg.pt` to the current Ultralytics cache.
+The three ranges are training, validation, and final test runs, respectively.
+Ultralytics uses validation during training for model selection; only the test
+split is used for final reported metrics. The command runs inside the `vla`
+Conda environment. On first use, Ultralytics downloads `yolo26n-seg.pt` to the
+current Ultralytics cache.
 
-Training does not invoke validation. After training, validate the selected models:
+After training, evaluate selected models on the untouched test split:
 
 ```bash
 scripts/yolo26_seg/run_validation.sh \
@@ -37,7 +39,7 @@ scripts/yolo26_seg/run_validation.sh \
 ```bash
 conda run --no-capture-output -n vla python \
   scripts/yolo26_seg/prepare_dataset.py \
-  --train-runs 1-35 --val-runs 36-44 \
+  --train-runs 1-35 --val-runs 36-40 --test-runs 41-44 \
   --source transfer \
   --output scan_output/yolo26_seg_datasets/transfer
 
@@ -47,7 +49,7 @@ conda run --no-capture-output -n vla python \
   --name transfer --device 0
 ```
 
-Training does not run validation. Validate the saved checkpoint separately:
+Validate the saved checkpoint on the test split separately:
 
 ```bash
 conda run --no-capture-output -n vla python \
@@ -56,12 +58,12 @@ conda run --no-capture-output -n vla python \
   scan_output/yolo26_seg/transfer/weights/best.pt \
   --project scan_output/yolo26_seg/transfer \
   --output scan_output/yolo26_seg/transfer/ground_truth_validation.json \
-  --device 0 --exist-ok
+  --split test --device 0 --exist-ok
 ```
 
 Generated datasets contain relative symbolic links to the original color images,
 YOLO polygon labels, `dataset.yaml`, and provenance in `metadata.json`. Validation
-labels always come from `save_segment`, regardless of the training source.
+and test labels always come from `save_segment`, regardless of the training source.
 
 Results are written under `scan_output/yolo26_seg/<source>/`. The compact report
 `ground_truth_validation.json` contains segmentation and box mAP50/mAP50-95.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure COCO-style mask mAP for one transferred-annotation scan run.
+"""Measure COCO-style mask and bounding-box mAP for one annotation run.
 
 Ground-truth manifests are resolved through the scan manifest's capture records,
 so evaluation remains correct after trajectory filtering and file renumbering.
@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import cv2
 import numpy as np
@@ -267,6 +267,48 @@ def mask_iou(
     return float(intersection / union) if union else 1.0
 
 
+def mask_box(mask: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Return an exclusive-maximum ``(x1, y1, x2, y2)`` mask bounding box."""
+    rows, columns = np.nonzero(mask)
+    if not len(columns):
+        return None
+    return (
+        int(columns.min()),
+        int(rows.min()),
+        int(columns.max()) + 1,
+        int(rows.max()) + 1,
+    )
+
+
+def box_iou(
+    prediction: MaskRecord,
+    ground_truth: MaskRecord,
+    cache: dict[Path, np.ndarray],
+) -> float:
+    """Calculate IoU between boxes tightly enclosing two binary masks."""
+    predicted_mask = load_mask(prediction, cache)
+    ground_truth_mask = load_mask(ground_truth, cache)
+    if predicted_mask.shape != ground_truth_mask.shape:
+        raise ValueError(
+            f"mask shape mismatch: {prediction.mask_path} {predicted_mask.shape} "
+            f"versus {ground_truth.mask_path} {ground_truth_mask.shape}"
+        )
+    predicted_box = mask_box(predicted_mask)
+    ground_truth_box = mask_box(ground_truth_mask)
+    if predicted_box is None or ground_truth_box is None:
+        return 0.0
+
+    px1, py1, px2, py2 = predicted_box
+    gx1, gy1, gx2, gy2 = ground_truth_box
+    intersection_width = max(0, min(px2, gx2) - max(px1, gx1))
+    intersection_height = max(0, min(py2, gy2) - max(py1, gy1))
+    intersection = intersection_width * intersection_height
+    predicted_area = (px2 - px1) * (py2 - py1)
+    ground_truth_area = (gx2 - gx1) * (gy2 - gy1)
+    union = predicted_area + ground_truth_area - intersection
+    return float(intersection / union) if union else 0.0
+
+
 def interpolated_ap(
     recalls: np.ndarray, precisions: np.ndarray
 ) -> float:
@@ -283,6 +325,9 @@ def class_ap(
     predictions: Sequence[MaskRecord],
     threshold: float,
     cache: dict[Path, np.ndarray],
+    iou_metric: Callable[
+        [MaskRecord, MaskRecord, dict[Path, np.ndarray]], float
+    ] = mask_iou,
 ) -> float:
     """Evaluate one class at one IoU threshold with per-frame greedy matching."""
     ground_truth_by_frame: dict[int, list[MaskRecord]] = defaultdict(list)
@@ -310,7 +355,7 @@ def class_ap(
             if index not in matched[prediction.frame_key]
         ]
         scored = [
-            (mask_iou(prediction, target, cache), index)
+            (iou_metric(prediction, target, cache), index)
             for index, target in available
         ]
         best_iou, best_index = max(scored, default=(0.0, -1))
@@ -332,7 +377,7 @@ def class_ap(
 def evaluate(
     ground_truth: Sequence[MaskRecord], predictions: Sequence[MaskRecord]
 ) -> dict[str, Any]:
-    """Compute per-class and macro mask AP50 and AP50:95."""
+    """Compute per-class and macro mask/box AP50 and AP50:95."""
     classes = sorted({record.class_name for record in ground_truth})
     cache: dict[Path, np.ndarray] = {}
     per_class = {}
@@ -343,30 +388,47 @@ def evaluate(
         class_predictions = [
             record for record in predictions if record.class_name == class_name
         ]
-        threshold_scores = {
-            f"{threshold:.2f}": class_ap(
-                class_ground_truth,
-                class_predictions,
-                float(threshold),
-                cache,
+        mask_threshold_scores = {}
+        box_threshold_scores = {}
+        for threshold in IOU_THRESHOLDS:
+            key = f"{threshold:.2f}"
+            mask_threshold_scores[key] = class_ap(
+                class_ground_truth, class_predictions, float(threshold), cache, mask_iou
             )
-            for threshold in IOU_THRESHOLDS
-        }
+            box_threshold_scores[key] = class_ap(
+                class_ground_truth, class_predictions, float(threshold), cache, box_iou
+            )
         per_class[class_name] = {
             "ground_truth_count": len(class_ground_truth),
             "prediction_count": len(class_predictions),
-            "AP50": threshold_scores["0.50"],
-            "AP50_95": float(np.mean(list(threshold_scores.values()))),
-            "AP_by_IoU": threshold_scores,
+            # Legacy keys remain aliases for mask metrics.
+            "AP50": mask_threshold_scores["0.50"],
+            "AP50_95": float(np.mean(list(mask_threshold_scores.values()))),
+            "AP_by_IoU": mask_threshold_scores,
+            "mask_AP50": mask_threshold_scores["0.50"],
+            "mask_AP50_95": float(np.mean(list(mask_threshold_scores.values()))),
+            "mask_AP_by_IoU": mask_threshold_scores,
+            "box_AP50": box_threshold_scores["0.50"],
+            "box_AP50_95": float(np.mean(list(box_threshold_scores.values()))),
+            "box_AP_by_IoU": box_threshold_scores,
         }
 
+    mask_map50 = float(np.mean([per_class[name]["mask_AP50"] for name in classes]))
+    mask_map50_95 = float(
+        np.mean([per_class[name]["mask_AP50_95"] for name in classes])
+    )
     return {
         "class_count": len(classes),
         "ground_truth_count": len(ground_truth),
         "prediction_count": len(predictions),
-        "mAP50": float(np.mean([per_class[name]["AP50"] for name in classes])),
-        "mAP50_95": float(
-            np.mean([per_class[name]["AP50_95"] for name in classes])
+        # Legacy keys remain aliases for mask metrics.
+        "mAP50": mask_map50,
+        "mAP50_95": mask_map50_95,
+        "mask_mAP50": mask_map50,
+        "mask_mAP50_95": mask_map50_95,
+        "box_mAP50": float(np.mean([per_class[name]["box_AP50"] for name in classes])),
+        "box_mAP50_95": float(
+            np.mean([per_class[name]["box_AP50_95"] for name in classes])
         ),
         "per_class": per_class,
     }
@@ -379,14 +441,20 @@ def print_report(report: dict[str, Any]) -> None:
         f"{report['ground_truth_count']} ground truth; "
         f"classes: {report['class_count']}"
     )
-    print(f"mAP50:    {report['mAP50']:.4f}")
-    print(f"mAP50-95: {report['mAP50_95']:.4f}")
-    print("\nClass                                GT  Pred    AP50  AP50-95")
+    print(f"Mask mAP50:     {report['mask_mAP50']:.4f}")
+    print(f"Mask mAP50-95:  {report['mask_mAP50_95']:.4f}")
+    print(f"Box mAP50:      {report['box_mAP50']:.4f}")
+    print(f"Box mAP50-95:   {report['box_mAP50_95']:.4f}")
+    print(
+        "\nClass                                GT  Pred  "
+        "Mask50 Mask50-95   Box50  Box50-95"
+    )
     for class_name, metrics in report["per_class"].items():
         print(
             f"{class_name:<35} {metrics['ground_truth_count']:>3} "
-            f"{metrics['prediction_count']:>5} {metrics['AP50']:>7.4f} "
-            f"{metrics['AP50_95']:>8.4f}"
+            f"{metrics['prediction_count']:>5} {metrics['mask_AP50']:>7.4f} "
+            f"{metrics['mask_AP50_95']:>9.4f} {metrics['box_AP50']:>7.4f} "
+            f"{metrics['box_AP50_95']:>9.4f}"
         )
 
 

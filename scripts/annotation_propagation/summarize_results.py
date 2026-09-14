@@ -1,5 +1,4 @@
-"""Aggregate mAP and runtime across manifest runs for the three annotation
-methods: proposed transfer, naive VLM zeroshot, naive VLM multi-shot.
+"""Aggregate mask/box mAP and runtime across runs for annotation methods.
 
 Reads, for each run in [start, end] and each method:
   - <output_dir>/map_report.json   for mAP50 / mAP50_95
@@ -72,6 +71,8 @@ def collect(scan_dir: Path, start: int, end: int) -> dict[str, dict]:
     for method in METHODS:
         map50_values = []
         map50_95_values = []
+        box_map50_values = []
+        box_map50_95_values = []
         runtime_values = []
         missing_runs = []
 
@@ -89,6 +90,10 @@ def collect(scan_dir: Path, start: int, end: int) -> dict[str, dict]:
                     map50_values.append(report["mAP50"])
                 if "mAP50_95" in report:
                     map50_95_values.append(report["mAP50_95"])
+                if "box_mAP50" in report:
+                    box_map50_values.append(report["box_mAP50"])
+                if "box_mAP50_95" in report:
+                    box_map50_95_values.append(report["box_mAP50_95"])
 
             if runtime_doc is not None:
                 seconds = runtime_doc.get("runtime", {}).get("total_seconds")
@@ -104,6 +109,15 @@ def collect(scan_dir: Path, start: int, end: int) -> dict[str, dict]:
             "avg_mAP50_95": (
                 sum(map50_95_values) / len(map50_95_values) if map50_95_values else None
             ),
+            "avg_box_mAP50": (
+                sum(box_map50_values) / len(box_map50_values)
+                if box_map50_values else None
+            ),
+            "avg_box_mAP50_95": (
+                sum(box_map50_95_values) / len(box_map50_95_values)
+                if box_map50_95_values else None
+            ),
+            "runs_with_box_map": len(box_map50_values),
             "avg_runtime_seconds": (
                 sum(runtime_values) / len(runtime_values) if runtime_values else None
             ),
@@ -119,8 +133,9 @@ def print_report(results: dict[str, dict], start: int, end: int) -> None:
     print(f"Summary over runs {start}-{end}\n")
     label_width = max((len(m.label) for m in METHODS), default=24) + 2
     header = (
-        f"{'Method':<{label_width}}{'avg mAP50':<14}{'avg mAP50:95':<16}"
-        f"{'avg runtime (s)':<18}{'runs (map/rt)'}"
+        f"{'Method':<{label_width}}{'mask mAP50':<13}{'mask mAP50:95':<16}"
+        f"{'box mAP50':<13}{'box mAP50:95':<16}"
+        f"{'avg runtime (s)':<18}{'runs (mask/box/rt)'}"
     )
     print(header)
     print("-" * len(header))
@@ -128,10 +143,13 @@ def print_report(results: dict[str, dict], start: int, end: int) -> None:
         r = results[method.key]
         print(
             f"{r['label']:<{label_width}}"
-            f"{format_value(r['avg_mAP50']):<14}"
+            f"{format_value(r['avg_mAP50']):<13}"
             f"{format_value(r['avg_mAP50_95']):<16}"
+            f"{format_value(r['avg_box_mAP50']):<13}"
+            f"{format_value(r['avg_box_mAP50_95']):<16}"
             f"{format_value(r['avg_runtime_seconds'], 2):<18}"
-            f"{r['runs_with_map']}/{r['runs_with_runtime']}"
+            f"{r['runs_with_map']}/{r['runs_with_box_map']}/"
+            f"{r['runs_with_runtime']}"
         )
         if r["missing_runs"]:
             print(f"    missing runs: {r['missing_runs']}")

@@ -2,7 +2,7 @@
 """Build an Ultralytics segmentation dataset from collected scan runs.
 
 Training labels come from one transfer/baseline prediction directory. Validation
-labels always come from the saved Isaac segmentation ground truth.
+and test labels always come from saved Isaac segmentation ground truth.
 """
 
 from __future__ import annotations
@@ -251,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scan-root", type=Path, default=Path("scan_output"))
     parser.add_argument("--train-runs", nargs="+", required=True, metavar="RUN")
     parser.add_argument("--val-runs", nargs="+", required=True, metavar="RUN")
+    parser.add_argument("--test-runs", nargs="+", required=True, metavar="RUN")
     parser.add_argument("--source", required=True, help="transfer or a baseline_segment child directory")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--route", default="hamilton_2opt")
@@ -264,10 +265,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(arguments)
     scan_root = args.scan_root.expanduser().resolve()
     output = args.output.expanduser().resolve()
-    train_runs, val_runs = parse_runs(args.train_runs), parse_runs(args.val_runs)
-    overlap = set(train_runs) & set(val_runs)
-    if overlap:
-        raise ValueError(f"train/validation run leakage: {sorted(overlap)}")
+    train_runs = parse_runs(args.train_runs)
+    val_runs = parse_runs(args.val_runs)
+    test_runs = parse_runs(args.test_runs)
+    split_runs = {"train": set(train_runs), "val": set(val_runs), "test": set(test_runs)}
+    for first, second in (("train", "val"), ("train", "test"), ("val", "test")):
+        overlap = split_runs[first] & split_runs[second]
+        if overlap:
+            raise ValueError(
+                f"{first}/{second} run leakage: {sorted(overlap)}"
+            )
     if output.exists():
         if not args.overwrite:
             raise FileExistsError(f"dataset exists (use --overwrite): {output}")
@@ -275,7 +282,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     output.mkdir(parents=True)
 
     # One ground-truth-derived vocabulary keeps every pseudo-label source comparable.
-    names = discover_classes(scan_root, [*train_runs, *val_runs], args.route)
+    names = discover_classes(
+        scan_root, [*train_runs, *val_runs, *test_runs], args.route
+    )
     class_ids = {name: index for index, name in enumerate(names)}
     train_stats = build_split(
         scan_root, output, "train", train_runs, args.route, args.source,
@@ -285,18 +294,32 @@ def main(arguments: Sequence[str] | None = None) -> int:
         scan_root, output, "val", val_runs, args.route, args.source,
         class_ids, args.polygon_epsilon, args.minimum_component_area,
     )
+    test_stats = build_split(
+        scan_root, output, "test", test_runs, args.route, args.source,
+        class_ids, args.polygon_epsilon, args.minimum_component_area,
+    )
     # Omitting ``path`` makes Ultralytics resolve splits beside this YAML file,
     # keeping the generated dataset portable across repository locations.
-    dataset_yaml = {"train": "images/train", "val": "images/val", "names": names}
+    dataset_yaml = {
+        "train": "images/train",
+        "val": "images/val",
+        "test": "images/test",
+        "names": names,
+    }
     (output / "dataset.yaml").write_text(yaml.safe_dump(dataset_yaml, sort_keys=False), encoding="utf-8")
     metadata = {
         "source": args.source, "route": args.route, "train_runs": train_runs,
-        "val_runs": val_runs, "classes": names, "train": train_stats, "val": val_stats,
-        "validation_annotation_source": "Isaac ground truth",
+        "val_runs": val_runs, "test_runs": test_runs, "classes": names,
+        "train": train_stats, "val": val_stats, "test": test_stats,
+        "val_annotation_source": "Isaac ground truth",
+        "test_annotation_source": "Isaac ground truth",
     }
     (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     print(f"Created {output / 'dataset.yaml'}")
-    print(f"Classes: {len(names)}; train: {train_stats}; validation: {val_stats}")
+    print(
+        f"Classes: {len(names)}; train: {train_stats}; "
+        f"validation: {val_stats}; test: {test_stats}"
+    )
     return 0
 
 
