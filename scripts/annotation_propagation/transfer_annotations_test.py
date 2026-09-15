@@ -12,6 +12,7 @@ real runs use Qwen3-VL bounding boxes followed by SAM.
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -64,7 +65,7 @@ class Frame:
 
 @dataclass
 class ObjectState:
-    """Previous accepted mask/cloud plus the best accepted area reference."""
+    """Previous accepted state plus the maximum-area mask and its 3-D cloud."""
 
     label: str
     instance: str
@@ -74,6 +75,7 @@ class ObjectState:
     point_cloud: o3d.geometry.PointCloud
     best_mask: np.ndarray
     best_area: int
+    best_point_cloud: o3d.geometry.PointCloud
 
 
 @dataclass(frozen=True)
@@ -667,6 +669,7 @@ def initialize_states(
                 point_cloud=cloud,
                 best_mask=mask.copy(),
                 best_area=int(mask.sum()),
+                best_point_cloud=copy.deepcopy(cloud),
             )
         )
     if not states:
@@ -911,10 +914,15 @@ def propagate_to_frame(
 ) -> tuple[bool, str, np.ndarray | None]:
     """Apply the paper algorithm once from the prior accepted view to frame t."""
     # --- 1. PROJECT THE PREVIOUS ACCEPTED OBJECT ---
-    # P_prev already lives in the base frame. Project it into candidate frame t.
-    pixels = project_cloud(state.point_cloud, frame.transform, intrinsics)
+    # Prefer P_prev. If it is entirely outside the current camera, retry with the
+    # cloud belonging to maximum-area M_best before declaring projection failure.
+    reference_cloud = state.point_cloud
+    pixels = project_cloud(reference_cloud, frame.transform, intrinsics)
     if not len(pixels):
-        return False, "no projected points", None
+        reference_cloud = state.best_point_cloud
+        pixels = project_cloud(reference_cloud, frame.transform, intrinsics)
+        if not len(pixels):
+            return False, "no projected points from previous or maximum mask", None
 
     # --- 2. SPATIAL PRE-FILTER ---
     # Reject weak projections, then back-project their current depths. Statistical
@@ -925,7 +933,7 @@ def propagate_to_frame(
     prompt_point = np.median(pixels, axis=0)
     if not args.no_drift_filter:
         projected_drift, _ = get_spatial_drift(
-            state.point_cloud, pixels, frame, intrinsics, args
+            reference_cloud, pixels, frame, intrinsics, args
         )
         if projected_drift > args.maximum_center_distance:
             return (
@@ -973,7 +981,7 @@ def propagate_to_frame(
     # Clean P_t with the same outlier and table-plane rules used by the pre-filter.
     cloud = cloud_from_mask(frame, mask, intrinsics.open3d())
     cloud = clean_spatial_cloud(cloud, args)
-    reference_cloud = clean_spatial_cloud(state.point_cloud, args)
+    reference_cloud = clean_spatial_cloud(reference_cloud, args)
     if cloud.is_empty() or reference_cloud.is_empty():
         return False, "segmented depth cloud is empty after filtering", prompt_point
     center_distance = float(
@@ -983,12 +991,14 @@ def propagate_to_frame(
         return False, f"3D center drift {center_distance:.4f} m", prompt_point
 
     # --- 6. COMMIT THE ACCEPTED TRACKING STATE ---
-    # A rejected frame never replaces M_prev or its filtered object point cloud.
+    # A rejected frame never replaces M_prev. A new maximum updates M_best and
+    # its matching 3-D cloud together so future fallback projections stay aligned.
     state.mask = mask
     state.point_cloud = cloud
     if area > state.best_area:
         state.best_mask = mask.copy()
         state.best_area = area
+        state.best_point_cloud = copy.deepcopy(cloud)
     return True, source, prompt_point
 
 
