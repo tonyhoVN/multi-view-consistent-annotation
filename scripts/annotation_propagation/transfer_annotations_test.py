@@ -748,6 +748,21 @@ def valid_area_ratio(
     return valid, ratio
 
 
+def valid_previous_area_ratio(
+    mask: np.ndarray, state: ObjectState, args: argparse.Namespace
+) -> tuple[bool, float]:
+    """Evaluate point-click mask area against the last accepted mask area."""
+    previous_area = int(state.mask.sum())
+    ratio = int(mask.sum()) / max(previous_area, 1)
+    valid = (
+        args.no_area_filter
+        or args.minimum_previous_area_ratio
+        <= ratio
+        <= args.maximum_previous_area_ratio
+    )
+    return valid, ratio
+
+
 # def text_prompt_mask(
 #     state: ObjectState,
 #     image: Image.Image,
@@ -919,17 +934,19 @@ def propagate_to_frame(
                 prompt_point,
             )
 
-    # --- 3. POINT-PROMPT SEGMENTATION ---
-    # Re-prompt SAM at the median, which is robust to a minority of projected noise.
+    # --- 3. POINT-PROMPT SEGMENTATION AGAINST M_PREV ---
+    # Re-prompt SAM at the robust projected median. This local continuity check
+    # compares its area with the immediately previous accepted mask, not M_best.
     mask = keep_largest_component(models.segment_point(image, prompt_point))
     area = int(mask.sum())
     if area < args.minimum_mask_pixels:
-        point_valid, ratio = False, area / max(state.best_area, 1)
+        point_valid, ratio = False, area / max(int(state.mask.sum()), 1)
     else:
-        point_valid, ratio = valid_area_ratio(mask, state, args)
+        point_valid, ratio = valid_previous_area_ratio(mask, state, args)
 
-    # --- 4. TEXT-PROMPT FALLBACK AND AREA VALIDATION ---
-    # Retry with Grounding DINO + SAM only when the point mask is implausible.
+    # --- 4. TEXT-PROMPT FALLBACK AND M_BEST AREA VALIDATION ---
+    # Retry with Grounding DINO + SAM when the point mask violates local
+    # continuity. The independent global-area gate remains relative to M_best.
     source = "sam_point"
     if not point_valid:
         text_mask = text_prompt_mask(
@@ -938,7 +955,7 @@ def propagate_to_frame(
         if text_mask is None:
             return (
                 False,
-                f"point area ratio {ratio:.3f}; text detection failed",
+                f"point/previous area ratio {ratio:.3f}; text detection failed",
                 prompt_point,
             )
         mask = text_mask
@@ -1206,6 +1223,8 @@ def run(args: argparse.Namespace) -> None:
             "maximum_center_distance_m": args.maximum_center_distance,
             "minimum_area_ratio": args.minimum_area_ratio,
             "maximum_area_ratio": args.maximum_area_ratio,
+            "minimum_previous_area_ratio": args.minimum_previous_area_ratio,
+            "maximum_previous_area_ratio": args.maximum_previous_area_ratio,
             "minimum_mask_pixels": args.minimum_mask_pixels,
             "outlier_neighbors": args.outlier_neighbors,
             "outlier_std_ratio": args.outlier_std_ratio,
@@ -1300,8 +1319,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="tau_dist: maximum 3D centroid drift (default: 0.05)",
     )
     parser.add_argument("--minimum-mask-pixels", type=int, default=25)
-    parser.add_argument("--minimum-area-ratio", type=float, default=0.20)
-    parser.add_argument("--maximum-area-ratio", type=float, default=5.0)
+    parser.add_argument(
+        "--minimum-previous-area-ratio",
+        type=float,
+        default=0.20,
+        help="step 3 minimum area ratio M_click/M_prev (default: 0.20)",
+    )
+    parser.add_argument(
+        "--maximum-previous-area-ratio",
+        type=float,
+        default=5.0,
+        help="step 3 maximum area ratio M_click/M_prev (default: 5.0)",
+    )
+    parser.add_argument(
+        "--minimum-area-ratio",
+        type=float,
+        default=0.20,
+        help="step 4 minimum area ratio M_text/M_best (default: 0.20)",
+    )
+    parser.add_argument(
+        "--maximum-area-ratio",
+        type=float,
+        default=5.0,
+        help="step 4 maximum area ratio M_text/M_best (default: 5.0)",
+    )
     parser.add_argument("--no-area-filter", action="store_true")
     parser.add_argument(
         "--table-origin",
@@ -1347,7 +1388,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if args.minimum_mask_pixels < 1:
         raise ValueError("--minimum-mask-pixels must be positive")
     if not 0.0 < args.minimum_area_ratio <= args.maximum_area_ratio:
-        raise ValueError("area ratios must be positive and ordered")
+        raise ValueError("step 4 best-mask area ratios must be positive and ordered")
+    if not (
+        0.0
+        < args.minimum_previous_area_ratio
+        <= args.maximum_previous_area_ratio
+    ):
+        raise ValueError(
+            "step 3 previous-mask area ratios must be positive and ordered"
+        )
     if args.outlier_neighbors < 1 or args.outlier_std_ratio <= 0.0:
         raise ValueError("outlier parameters must be positive")
     table_origin = np.asarray(args.table_origin, dtype=np.float64)
